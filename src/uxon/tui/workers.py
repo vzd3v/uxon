@@ -24,6 +24,7 @@ is stable for the App's lifetime and captured directly.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -104,6 +105,7 @@ class WorkerCoordinator:
         # the in-flight worker for that source so a slow source never
         # blocks a faster sibling's next tick.
         self._source_handles: dict[str, Worker | None] = {}
+        self._source_keys: dict[str, str] = {}
         self._remote_breakers: dict[str, HostBreaker] = {}
         self._remote_attempts: dict[str, _RemoteAttempt] = {}
         self._next_attempt_id = 0
@@ -146,7 +148,7 @@ class WorkerCoordinator:
         """
         for spec in self._app.ctx.refresh_sources or ():
             if spec.kick_on_mount:
-                self.kick_source(spec)
+                self.kick_source(spec, initial=True)
 
     def kick_refresh(self, *, manual: bool = False) -> None:
         """Fan out: kick every registered refresh source.
@@ -162,16 +164,39 @@ class WorkerCoordinator:
         for spec in sources:
             self.kick_source(spec, manual=manual)
 
-    def kick_source(self, spec: Any, *, manual: bool = False) -> None:
+    def kick_source(self, spec: Any, *, manual: bool = False, initial: bool = False) -> None:
         """Schedule one source's fetcher in a worker if not already running.
 
         Worker group is namespaced ``refresh:<name>`` so an ``exclusive``
         call from one source can never cancel another source's worker
         (the same per-stream isolation that the 3.2.2 fix established).
         """
+        # Timers outlive individual config/session snapshots. Resolve the
+        # current fetcher instead of retaining the initial config forever.
+        spec = next(
+            (
+                current
+                for current in self._app.ctx.refresh_sources or ()
+                if current.name == spec.name
+            ),
+            spec,
+        )
         handle = self._source_handles.get(spec.name)
-        if _worker_active(handle):
-            _debug("refresh", at="kick_source", source=spec.name, action="skip", reason="in_flight")
+        if handle is not None and _worker_active(handle):
+            if self._source_keys.get(spec.name, spec.key) == spec.key:
+                _debug(
+                    "refresh", at="kick_source", source=spec.name, action="skip", reason="in_flight"
+                )
+                return
+            # Detach the old UI subscriber. Its bounded read may finish, but
+            # it cannot hold up the newly configured root/backend.
+            handle.cancel()
+        self._source_keys[spec.name] = spec.key
+        if spec.prefetch and self._app.background is not None:
+            future = self._app.background.start(spec, reuse=initial)
+            self._source_handles[spec.name] = self._run_worker(
+                self._await_source(future), group=f"refresh:{spec.name}"
+            )
             return
         breaker = None
         attempt = None
@@ -242,6 +267,14 @@ class WorkerCoordinator:
         from .refresh import run_source
 
         result = run_source(spec)
+        return self._post_source_result(result, attempt)
+
+    async def _await_source(self, future: Any) -> None:
+        # Cancellation belongs to this UI subscriber, not the shared read.
+        result = await asyncio.shield(asyncio.wrap_future(future))
+        self._post_source_result(result, None)
+
+    def _post_source_result(self, result: Any, attempt: _RemoteAttempt | None) -> bool:
         _debug(
             "refresh",
             at="source_worker",
@@ -263,6 +296,7 @@ class WorkerCoordinator:
                 elapsed_ms=result.elapsed_ms,
                 instance_epoch=self._instance_epoch(),
                 attempt_id=attempt.attempt_id if attempt is not None else 0,
+                source_key=result.key,
             )
         )
 
@@ -271,9 +305,8 @@ class WorkerCoordinator:
     def kick_host_probe(self) -> None:
         """Schedule the host probe iff one isn't already in flight.
 
-        Wired into ``on_mount`` (initial) and ``MainScreen.action_refresh``
-        (manual ``r`` keybinding). The probe is one-shot on mount; the
-        user picks up freshly-installed binaries via ``r``. Honours
+        Wired into mount and manual refresh. The process-owned future is
+        reused across refreshes and dashboard recreations. Honours
         ``app.probe_agents`` so tests that opt out of probing (Pilot
         tests with ``probe_agents=False``, the pty integration suite
         that stubs ``probes.probe_host``) do not start a real subprocess
@@ -283,94 +316,49 @@ class WorkerCoordinator:
             return
         if _worker_active(self._host_probe_handle):
             return
+        if self._app.background is not None:
+            from .agent_discovery import discover_agents
+            from .refresh import SourceSpec
+
+            cfg = self._cfg
+            future = self._app.background.start(
+                SourceSpec("agent_discovery", lambda: discover_agents(cfg)), reuse=True
+            )
+            self._host_probe_handle = self._run_worker(
+                self._await_host_probe(future), exclusive=True, group="host_probe"
+            )
+            return
         self._host_probe_handle = self._run_worker(
             self._probe_host_worker, thread=True, exclusive=True, group="host_probe"
         )
 
     def _probe_host_worker(self) -> None:
-        """Background thread: probe tmux + all known agent binaries.
-
-        Race-free: the worker builds a local availability dict and
-        posts it in a single :class:`_HostReportUpdated`; the on-loop
-        handler folds the payload into ``state.agent_availability``
-        via :func:`slot_state.apply`. No ``self.ctx.<field>`` access
-        from the thread.
-
-        Uses ``probes.probe_host`` so one ``sh -lc`` round-trip covers
-        every catalogued agent (``self._cfg.agents``).
-        """
+        """Discover presence once per Uxon process, without executing agents."""
         import time as _time
 
-        from uxon.infra import agents as uxon_agents
-        from uxon.infra import probes as uxon_probes
+        from .agent_discovery import discover_agents
+        from .refresh import SourceSpec, run_source
 
         t0 = _time.monotonic()
-        try:
-            reports = {}
-            profiles = self._cfg.launch_profiles
-            if not profiles:
-                raise ValueError("TUI requires at least one validated launch profile")
-            by_user: dict[str, set[str]] = {}
-            for profile in profiles.values():
-                agents = by_user.setdefault(profile.launch_user, set())
-                if profile.runtime == "direct":
-                    agents.add(profile.agent)
-            for user, agent_ids in by_user.items():
-                catalog = {
-                    aid: self._cfg.agents[aid]
-                    for aid in sorted(agent_ids)
-                    if aid in self._cfg.agents
-                }
-                reports[user] = uxon_probes.probe_host(self._cfg, user, catalog)
-        except Exception as exc:  # pragma: no cover — defensive
-            self._post_message(
-                _HostReportUpdated(
-                    error=str(exc) or exc.__class__.__name__,
-                    elapsed_ms=int((_time.monotonic() - t0) * 1000),
-                )
-            )
-            return
-
-        # Preserve every profile's result, including failures in auto-mode.
-        # Visibility is a separate state decision; the unavailable modal needs
-        # a settled result for every candidate rather than an incomplete map.
-        configured = self._cfg.enabled_profiles
-        availability: dict = {}
-        for pid in configured:
-            profile = self._cfg.launch_profiles.get(pid)
-            if profile is None:
-                availability[pid] = uxon_agents.AgentAvailability(
-                    status="missing", error="unknown launch profile"
-                )
-                continue
-            report = reports.get(profile.launch_user)
-            if report is None or report.tmux.path is None:
-                availability[pid] = uxon_agents.AgentAvailability(
-                    status="missing",
-                    error="tmux not found on PATH",
-                )
-                continue
-            if profile.runtime != "direct":
-                availability[pid] = uxon_agents.AgentAvailability(
-                    status="ok",
-                    path=f"runtime:{profile.runtime}",
-                )
-                continue
-            status = report.agents.get(profile.agent)
-            if status is not None and status.path is not None:
-                availability[pid] = status.availability or uxon_agents.AgentAvailability(
-                    status="ok", path=status.path
-                )
-            else:
-                spec = self._cfg.agents.get(profile.agent)
-                binary = spec.binary if spec is not None else profile.agent
-                availability[pid] = uxon_agents.AgentAvailability(
-                    status="missing", error=f"{binary} not found on PATH"
-                )
+        cfg = self._cfg
+        result = run_source(SourceSpec("agent_discovery", lambda: discover_agents(cfg)))
         self._post_message(
             _HostReportUpdated(
-                availability=availability,
+                availability=result.value
+                if isinstance(result.value, dict) and not result.error
+                else None,
+                error=result.error or "",
                 elapsed_ms=int((_time.monotonic() - t0) * 1000),
+            )
+        )
+
+    async def _await_host_probe(self, future: Any) -> None:
+        result = await asyncio.shield(asyncio.wrap_future(future))
+        self._post_message(
+            _HostReportUpdated(
+                availability=result.value if isinstance(result.value, dict) else None,
+                error=result.error or "",
+                elapsed_ms=result.elapsed_ms,
             )
         )
 

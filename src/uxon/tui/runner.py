@@ -20,13 +20,15 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 
 from uxon.app.session_handoff import run_launch_request
 from uxon.infra.events import debug as _debug
 from uxon.infra.terminal_title import set_dashboard_title
 
-from .context import CallbackError, TuiContext
+from .background import BackgroundSources
+from .context import TuiContext
 from .hints import TEXTUAL_MISSING_HINT
 from .launch import pause_on_launch_failure
 
@@ -99,13 +101,28 @@ def _run_app_with_terminal_lifetime(
 
 
 def run(ctx: TuiContext) -> int:
+    background = BackgroundSources()
+    try:
+        # Collect local data while Textual imports and builds the first frame.
+        background.prefetch(ctx.refresh_sources or ())
+        from .agent_discovery import discover_agents
+        from .config import TuiConfig
+        from .refresh import SourceSpec
+
+        cfg = TuiConfig.from_context(ctx)
+        background.start(SourceSpec("agent_discovery", lambda: discover_agents(cfg)), reuse=True)
+        return _run(ctx, background)
+    finally:
+        background.close()
+
+
+def _run(ctx: TuiContext, background: BackgroundSources) -> int:
     """Run the interactive uxon TUI.
 
     Creates a :class:`UxonApp`, waits for it to exit, and on every
     launch-triggered exit runs the requested subprocess and re-creates
-    the app with a refreshed context. On ``CallbackError`` from
-    ``on_refresh`` the error is stashed in ``pending_status`` and
-    surfaces as a toast when the next app instance mounts.
+    the app with its last published snapshot. Collectors refresh it in
+    parallel; refresh failures surface through their normal source handlers.
     """
     try:
         import textual  # noqa: F401 — presence check
@@ -143,7 +160,7 @@ def run(ctx: TuiContext) -> int:
         if sys.stdout.isatty():
             sys.stdout.write("\ruxon | Open project | Create new project | Open in this folder\r")
             sys.stdout.flush()
-        app = UxonApp(ctx, pending_status=pending_status)
+        app = UxonApp(ctx, pending_status=pending_status, background=background)
         _run_app_with_terminal_lifetime(
             app.run,
             partial(app.call_later, app.exit),
@@ -217,8 +234,8 @@ def run(ctx: TuiContext) -> int:
             )
             raise
         pause_on_launch_failure(sys.stdout, req, rc, stage, wall_seconds)
-        try:
-            ctx = ctx.on_refresh()
-            pending_status = result.warning
-        except CallbackError as exc:
-            pending_status = "; ".join(filter(None, (result.warning, f"Refresh failed: {exc}")))
+        # Reopen immediately from the last published snapshot. New reads run
+        # alongside app construction; an unfinished read is reused, not doubled.
+        ctx = replace(app.ctx, agent_availability=dict(app.state.agent_availability.value or {}))
+        pending_status = result.warning
+        background.prefetch(ctx.refresh_sources or ())

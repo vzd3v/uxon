@@ -1,4 +1,4 @@
-"""Bounded agent execution probes shared by launch, TUI and doctor."""
+"""Bounded executable diagnostics for explicitly requested doctor checks."""
 
 from __future__ import annotations
 

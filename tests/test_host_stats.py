@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import platform
+from unittest.mock import patch
 
-from uxon.infra.probes import read_host_stats
+from uxon.infra.probes import HostStatsSampler, read_host_stats
 
 
 def test_host_stats_exact_delta_missing_memory_zero_delta_and_clamps(tmp_path, monkeypatch):
@@ -46,3 +47,14 @@ def test_host_stats_exact_delta_missing_memory_zero_delta_and_clamps(tmp_path, m
     assert read_host_stats().cpu_pct == 100
     assert read_host_stats().cpu_pct == 0
     assert sleeps == [0.05] * 4
+
+
+def test_tui_cpu_sampling_uses_refresh_deltas_without_sleep(tmp_path, monkeypatch):
+    (tmp_path / "stat").write_text("cpu 100 0 50 1000 0\n")
+    monkeypatch.setattr("uxon.infra.probes._PROC", str(tmp_path))
+    sampler = HostStatsSampler()
+    with patch("time.sleep", side_effect=AssertionError("TUI CPU sampling must not sleep")):
+        assert sampler.read() is None
+        (tmp_path / "stat").write_text("cpu 150 0 50 1050 0\n")
+        stats = sampler.read()
+    assert stats is not None and stats.cpu_pct == 50

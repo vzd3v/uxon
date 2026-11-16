@@ -122,6 +122,21 @@ The outer loop in `src/uxon/tui/runner.py::run()` hands the request to
 client gets the real terminal. It waits for the client and creates a fresh
 `App` for the next round-trip.
 
+Local sessions, project directories and host statistics are independent
+`SourceSpec` collectors. `tui/background.py` owns their bounded executor for
+the interactive process: reads start before Textual initialization, remain
+single-flight per source/target, and survive cancellation of an App subscriber.
+Reentry paints the last published snapshot while refreshing; it does not wait
+for a synchronous context rebuild. Result keys include user, root and execution
+backend fingerprint so stale successes and failures cannot update a new target.
+
+`tui/agent_discovery.py` discovers command presence once per interactive
+process; neither the TUI nor launch preparation executes agent version commands.
+Doctor retains its explicit executable diagnostics. `RenderScheduler` combines
+arrivals, with separate project/status updates that avoid rebuilding session
+rows. Existing widgets and focus survive refreshes; dashboard resume flushes
+updates retained while a modal was open.
+
 ## Session identity
 
 Uxon already assigns its own random launch ID: `launch_nonce`, generated from

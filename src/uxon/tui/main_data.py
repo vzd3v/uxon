@@ -1,14 +1,8 @@
-"""Frozen :class:`MainData` — output of one rebuild tick.
+"""Frozen local snapshots published by independent dashboard collectors.
 
-Each call to ``on_refresh()`` produces a fresh :class:`MainData` —
-fields like ``sessions``, ``server_status`` and ``cwd_short`` change
-on every tick, while configuration (``enabled_profiles``, callbacks,
-remote-hosts registry) and async-source state (``link_health``,
-``remote_snapshots``) live elsewhere.
-
-The ``loading`` field is **not** stored here: the local rebuild
-source always succeeds, so "no rebuild has landed yet" is a property
-of the slot store (``state.main is None``), not of the rebuild output.
+``MainData`` combines the latest accepted session, project and host data.
+Readiness belongs to the corresponding context fields, so project or host
+results can be published while sessions are still loading.
 """
 
 from __future__ import annotations
@@ -27,12 +21,23 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectsData:
+    root: str
+    projects: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HostData:
+    server_status: ServerStatus
+    host_stats: HostStatsResult | None
+
+
+@dataclass(frozen=True, slots=True)
 class MainData:
     """Output of one local rebuild tick.
 
-    Every field here is derived from the live system state by the
-    rebuild path (today: ``tui.context_builder.build_tui_context``); none come from
-    an async source, none belong on :class:`uxon.tui.config.TuiConfig`.
+    The source dispatcher merges independent local results into this snapshot;
+    these data fields do not belong on :class:`uxon.tui.config.TuiConfig`.
 
     Sequences are tuples (not lists) so two equal :class:`MainData`
     instances compare ``==`` and can be hashed indirectly via the

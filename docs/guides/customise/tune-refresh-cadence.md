@@ -12,9 +12,9 @@ tui_ssh_refresh_interval_seconds  = 30.0
 
 ## What each key controls
 
-- **`tui_refresh_interval_seconds`** — the local-`tmux` poll
-  cadence. The TUI re-enumerates own + cross-user sessions and
-  repaints the dashboard at this interval.
+- **`tui_refresh_interval_seconds`** — the cadence for independent local
+  session, project-directory and host-statistics collectors. A slow collector
+  does not hold up the others; completed updates are combined for rendering.
 - **`tui_ssh_refresh_interval_seconds`** — the SSH-driven
   cadence. Two streams use it: the `ssh-link` RTT probe in the
   bottom server-status block (only visible when you're inside
@@ -43,6 +43,9 @@ Local and peer collection both run probes. Increase intervals when collection
 cost or network latency is high; use the
 [diagnostic timing channel](../debug/enable-debug-logs.md) to measure the result.
 A successful response updates the view; a failed peer is not shown from cache.
+Local collection starts alongside UI initialization. Returning from a terminal
+shows the last published data while new reads run in the background. CPU usage
+is measured between refreshes; its first percentage needs a second sample.
 
 ## Related
 

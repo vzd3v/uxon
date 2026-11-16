@@ -13,6 +13,7 @@ Dismiss values:
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import ClassVar
 
@@ -32,6 +33,15 @@ def _row_label(name: str, mtime: str) -> str:
     # regardless of name length. The 70-cell modal width minus
     # padding leaves ~66 cells; mtime takes 5 + 1 space.
     return f"{name:<60.60} {mtime:>5}"
+
+
+def _selection_index(
+    previous: list[tuple[str, str]], index: int | None, rows: list[tuple[str, str]]
+) -> int | None:
+    if index is not None and 0 <= index < len(previous):
+        selected = previous[index][0]
+        return next((i for i, row in enumerate(rows) if row[0] == selected), index)
+    return index
 
 
 class ExistingProjectScreen(CardModal["str | None"]):
@@ -97,6 +107,8 @@ class ExistingProjectScreen(CardModal["str | None"]):
         project_root: str,
         *,
         list_directories: Callable[[str], list[tuple[str, str]]] = lambda path: [],
+        loading: bool = False,
+        error: str = "",
     ) -> None:
         super().__init__()
         # Each entry: (name, compact_mtime).
@@ -105,7 +117,11 @@ class ExistingProjectScreen(CardModal["str | None"]):
         self._list_directories = list_directories
         self._directory = ""
         self._history: list[ProjectBrowserLevel] = []
-        self._loading = False
+        self._loading = loading
+        self._error = error
+        self._root_projects = list(projects)
+        self._root_error = error
+        self._root_pending = loading
         self._navigation_epoch = 0
         # Filtered view drives the ListView render and Enter's row
         # resolution; kept in sync with the input via ``on_filter_changed``.
@@ -126,6 +142,29 @@ class ExistingProjectScreen(CardModal["str | None"]):
 
     def on_mount(self) -> None:
         self._sync_match_count()
+        self._sync_browser_status()
+
+    async def update_root(self, projects: list[tuple[str, str]], error: str = "") -> None:
+        self._root_projects = list(projects)
+        self._root_error = error
+        if (
+            not self.is_mounted
+            or self._directory
+            or self._history
+            or (self._loading and not self._root_pending)
+        ):
+            return
+        index = self.query_one(ListView).index
+        previous = self._filtered
+        self.projects = list(projects)
+        self._filtered = filter_existing_projects(projects, self.query_one(FilterInput).value)
+        index = _selection_index(previous, index, self._filtered)
+        self._error = error
+        self._loading = True
+        await self._render_list(index)
+        self._loading = False
+        self._root_pending = False
+        self._sync_browser_status()
 
     def action_cancel(self) -> None:
         fi = self.query_one(FilterInput)
@@ -177,6 +216,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
             return
         self._history.append(self._snapshot())
         self._directory = path
+        self._error = ""
         self.projects = list(projects)
         self._filtered = list(projects)
         fi = self.query_one(FilterInput)
@@ -193,6 +233,12 @@ class ExistingProjectScreen(CardModal["str | None"]):
         self.query_one("#browser-status", Static).update(str(exc))
 
     def action_parent_directory(self) -> None:
+        if not self._history:
+            if self._loading and not self._root_pending:
+                self._navigation_epoch += 1
+                self._loading = False
+                self._sync_browser_status()
+            return
         # Cancel pending navigation before it can land in a different directory.
         self._navigation_epoch += 1
         self._loading = True
@@ -207,6 +253,14 @@ class ExistingProjectScreen(CardModal["str | None"]):
             self.query_one("#browser-status", Static).update("")
             return
         level = self._history.pop()
+        if not level.directory:
+            rows = filter_existing_projects(self._root_projects, level.needle)
+            level = replace(
+                level,
+                projects=tuple(self._root_projects),
+                index=_selection_index(level.filtered, level.index, rows),
+            )
+        self._error = self._root_error if not level.directory else ""
         self._directory = level.directory
         self.projects = list(level.projects)
         self._filtered = level.filtered
@@ -265,7 +319,9 @@ class ExistingProjectScreen(CardModal["str | None"]):
         status = (
             "" if self._filtered else "No matching folders" if self.projects else "No subfolders"
         )
-        self.query_one("#browser-status", Static).update("Loading…" if self._loading else status)
+        self.query_one("#browser-status", Static).update(
+            "Loading…" if self._loading else self._error or status
+        )
 
     def _sync_match_count(self) -> None:
         self.query_one(FilterInput).set_match_count(len(self._filtered))

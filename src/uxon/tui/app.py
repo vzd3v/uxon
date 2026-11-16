@@ -30,6 +30,7 @@ from uxon.domain.launch_request import LaunchRequest
 from uxon.infra.events import debug as _debug
 from uxon.infra.events import is_enabled as _debug_enabled
 
+from .background import BackgroundSources
 from .config import TuiConfig
 from .context import TuiContext
 from .keylog import diagnostic_key
@@ -91,6 +92,7 @@ class UxonApp(App):
         pending_status: str = "",
         *,
         probe_agents: bool = True,
+        background: BackgroundSources | None = None,
     ) -> None:
         super().__init__()
         # Header title — "uxon <version>" rather than Textual's
@@ -98,6 +100,7 @@ class UxonApp(App):
         # single source of truth so it never drifts.
         self.title = f"uxon {__version__}"
         self.ctx = ctx
+        self.background = background
         # Snapshot the immutable side of ``ctx`` once at construction.
         # ``cfg`` is shared across rebuild ticks — ``on_refresh()``
         # produces a fresh ctx with new sessions / server_status, but
@@ -184,10 +187,10 @@ class UxonApp(App):
         # sees *why* nothing was probed rather than a generic "no
         # agents" message.
         self._host_probe_error: str = ""
-        # Latest TuiContext from a successful ``main_ctx_rebuild`` landing.
+        # Latest context merged from accepted local-source results.
         # The render scheduler reads it when firing a "main_ctx" dirty
         # batch into ``MainScreen.apply_loaded_ctx``. Stays ``None`` until
-        # the first non-error rebuild lands.
+        # the first accepted local result lands.
         self._latest_ctx: TuiContext | None = None
         # Single locus for render-cadence decisions. All paths that
         # want a redraw call ``self._render.request(kind)``; the
@@ -330,7 +333,7 @@ class UxonApp(App):
         # loop unblocked. ``kick_initial_sources`` honours
         # ``SourceSpec.kick_on_mount`` so future one-shot or interval-only
         # sources can opt out of the initial fan-out.
-        if self.ctx.loading:
+        if self.ctx.loading or self.background is not None:
             self._worker_coord.kick_initial_sources()
         # Kick off background host probe (tmux + all known agents).
         # Probes every CATALOG agent regardless of cfg.enabled_profiles
@@ -473,8 +476,16 @@ class UxonApp(App):
             if "main_ctx" in kinds and self._latest_ctx is not None:
                 screen.apply_loaded_ctx(self._latest_ctx)
                 return True
+            screen.cfg = self.ctx
+            if "projects" in kinds:
+                screen._dashboard.refresh_projects()
+            if "stats" in kinds:
+                screen._update_status_line()
+                screen._dashboard.refresh_host_stats()
             if "remote" in kinds:
                 screen._refresh_dashboard()
+                return True
+            if kinds & {"projects", "stats"}:
                 return True
         return False
 

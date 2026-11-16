@@ -71,6 +71,9 @@ class SourceSpec:
     cadence_seconds_attr: str | None = "tui_refresh_interval_seconds"
     cadence_seconds: float | None = None
     kick_on_mount: bool = True
+    # Local sources can start before the UI and survive a terminal handoff.
+    prefetch: bool = False
+    key: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,7 @@ class SourceResult:
     value: object
     error: str | None
     elapsed_ms: int
+    key: str = ""
 
 
 def run_source(spec: SourceSpec) -> SourceResult:
@@ -119,6 +123,7 @@ def run_source(spec: SourceSpec) -> SourceResult:
             value=None,
             error=str(exc) or exc.__class__.__name__,
             elapsed_ms=int((time.monotonic() - t0) * 1000),
+            key=spec.key,
         )
     return SourceResult(
         name=spec.name,
@@ -127,4 +132,5 @@ def run_source(spec: SourceSpec) -> SourceResult:
         if isinstance(value, RemoteSnapshot) and not value.is_live
         else None,
         elapsed_ms=int((time.monotonic() - t0) * 1000),
+        key=spec.key,
     )

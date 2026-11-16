@@ -497,9 +497,14 @@ class LaunchFlow:
     def launch_existing(self) -> None:
         host = self.host
         self._generation += 1
-        if not host.cfg.existing_projects:
+        projects_ctx = host.app.ctx  # type: ignore[attr-defined]
+        if (
+            not projects_ctx.projects_loading
+            and not projects_ctx.projects_error
+            and not projects_ctx.existing_projects
+        ):
             host.app.notify(
-                f"No projects in {host.cfg.new_project_root}",
+                f"No projects in {projects_ctx.new_project_root}",
                 severity="warning",
                 timeout=4,
             )
@@ -511,7 +516,7 @@ class LaunchFlow:
             if not name:
                 return
 
-            project_dir = os.path.join(host.cfg.new_project_root, name)
+            project_dir = os.path.join(projects_ctx.new_project_root, name)
 
             def commit_primary(
                 profile_id: str, mode_id: str, target_dir: str | None = None
@@ -519,7 +524,7 @@ class LaunchFlow:
                 # Preserve the chosen directory, including subfolders of a
                 # repository. The planner revalidates its relative project path
                 # under the selected profile before building the request.
-                fn = host.cfg.on_launch_existing
+                fn = projects_ctx.on_launch_existing
 
                 def do_commit() -> None:
                     host.app.run_off_loop(  # type: ignore[attr-defined]
@@ -543,9 +548,11 @@ class LaunchFlow:
 
         host.app.push_screen(
             ExistingProjectScreen(
-                host.cfg.existing_projects,
-                host.cfg.new_project_root,
-                list_directories=host.cfg.on_list_project_directories,
+                projects_ctx.existing_projects,
+                projects_ctx.new_project_root,
+                list_directories=projects_ctx.on_list_project_directories,
+                loading=projects_ctx.projects_loading,
+                error=projects_ctx.projects_error,
             ),
             after_name,
         )

@@ -8,6 +8,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- TUI and launch preparation no longer execute agents to check their versions. TUI command discovery runs once in the background and is reused across dashboard entries; restart Uxon to discover newly installed agents. Doctor keeps its existing executable checks.
+
+### Fixed
+- Opening projects immediately after startup shows loading, errors or the loaded list correctly. Projects, sessions and host statistics load independently alongside UI initialization.
+- Returning from a session shows the last published dashboard without waiting for a full refresh. Project and statistics updates preserve input and selection without rebuilding session rows; CPU sampling no longer pauses TUI collectors.
+
 ## [4.0.1] — 2026-11-14
 
 ### Fixed

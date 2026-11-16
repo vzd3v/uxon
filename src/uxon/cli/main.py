@@ -57,7 +57,7 @@ def do_interactive(cfg: Config, caller_user: str, launch_user: str) -> int:
 
     cwd = os.path.normpath(os.path.abspath(os.getcwd()))
     # Hand the TUI a skeleton ctx so the first frame paints immediately;
-    # the real ctx is loaded by a worker once the app is mounted.
+    # independent data reads start alongside UI initialization in the runner.
     ctx = build_tui_context(cfg, caller_user, launch_user, cwd, skeleton=True)
     return uxon_tui.run(ctx)
 

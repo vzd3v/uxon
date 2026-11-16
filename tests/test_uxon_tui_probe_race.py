@@ -63,7 +63,8 @@ class ProbeWorkerTests(unittest.IsolatedAsyncioTestCase):
         started, release = threading.Event(), threading.Event()
         worker_threads = []
 
-        def probe(_cfg, user, catalog):
+        def probe(_cfg, user, catalog, *, check_agents):
+            self.assertFalse(check_agents)
             worker_threads.append(threading.get_ident())
             started.set()
             if not release.wait(10):
@@ -131,7 +132,8 @@ class ProbeWorkerTests(unittest.IsolatedAsyncioTestCase):
     def test_same_agent_different_users_and_runtime_profiles_have_separate_results(self):
         calls = []
 
-        def probe(_cfg, user, catalog):
+        def probe(_cfg, user, catalog, *, check_agents):
+            self.assertFalse(check_agents)
             calls.append((user, frozenset(catalog)))
             return HostReport(
                 BinaryStatus("tmux", "/usr/bin/tmux", ""),

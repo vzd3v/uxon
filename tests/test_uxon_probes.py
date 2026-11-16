@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from dataclasses import replace
 from unittest import mock
@@ -121,7 +122,10 @@ def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
 def test_broken_executable_shim_is_reported_and_rechecked_after_repair(tmp_path, capsys):
     shim = tmp_path / "agent"
     missing = tmp_path / "missing-executable"
-    shim.write_text(f'#!/bin/sh\nexec "{missing}" "$@"\n')
+    marker = tmp_path / "executions"
+    shim.write_text(
+        f'#!/bin/sh\nprintf executed >> {shlex.quote(str(marker))}\nexec "{missing}" "$@"\n'
+    )
     shim.chmod(0o755)
     cfg = make_config(
         allowed_roots=[str(tmp_path)],
@@ -141,9 +145,10 @@ def test_broken_executable_shim_is_reported_and_rechecked_after_repair(tmp_path,
     assert status.availability.status == "error"
     assert status.availability.returncode == 127
     assert str(missing) in status.availability.error
-    with pytest.raises(SystemExit):
-        resolve_launch_profile(cfg, user, "claude", str(tmp_path), "normal")
-    assert str(missing) in capsys.readouterr().err
+    marker.unlink()
+    resolved = resolve_launch_profile(cfg, user, "claude", str(tmp_path), "normal")
+    assert resolved.agent.binary == str(shim)
+    assert not marker.exists(), "launch preparation must not execute the agent"
     do_doctor(cfg, user, user, str(tmp_path), json_output=True)
     result = json.loads(capsys.readouterr().out)["data"]
     assert result["agents"]["claude"]["status"] == "error"

@@ -330,6 +330,7 @@ from helpers import make_config
 from uxon.infra import probes, sessions_probe, tmux
 from uxon.infra.run import run_query
 from uxon.tui.context import CallbackError, LaunchProfileOption, TuiContext
+from uxon.tui.refresh import SourceSpec
 from uxon.tui.runner import run
 
 os.environ.pop('TMUX', None)
@@ -338,7 +339,7 @@ cfg = make_config(tmux_socket_template={terminal.cfg.tmux_socket_template!r})
 user = {terminal.user!r}
 target = sessions_probe.collect_sessions([user], cfg)[0]
 request = tmux._build_tmux_attach_request(target, cfg, user)
-probes.probe_host = lambda *_args: SimpleNamespace(
+probes.probe_host = lambda *_args, **_kwargs: SimpleNamespace(
     tmux=SimpleNamespace(path='/usr/bin/tmux'),
     agents={{'claude': SimpleNamespace(path='/usr/bin/claude', availability=None)}},
 )
@@ -358,12 +359,15 @@ def attach(*_args):
     assert result.returncode == 0, result.stderr
     return request
 def refresh():
-    global rounds
-    rounds += 1
+    global rounds, published
+    if rounds == launches:
+        return published
+    rounds = launches
     if rounds == 3:
         raise CallbackError('title-refresh-failed')
-    return replace(ctx, cwd_short=f'menu-after-detach-{{rounds}}',
-                   tmux_set_terminal_title=rounds == 1, agents=menu_agents(rounds + 1))
+    published = replace(published, cwd_short=f'menu-after-detach-{{rounds}}',
+                        tmux_set_terminal_title=rounds == 1, agents=menu_agents(rounds + 1))
+    return published
 ctx = TuiContext(
     sessions=[], total_cpu='0', total_ram='0', version='test',
     cwd='/srv/projects/demo', cwd_short='menu-before-attach',
@@ -373,6 +377,10 @@ ctx = TuiContext(
     launch_profiles={{'claude': LaunchProfileOption('claude', 'Claude', 'claude', user)}},
     on_launch_cwd=attach, on_refresh=refresh,
 )
+ctx.refresh_sources = [SourceSpec(
+    'main_ctx_rebuild', refresh, prefetch=True, cadence_seconds_attr=None,
+)]
+published = ctx
 rc = run(ctx)
 print('TITLE_RUNNER_EXITED', flush=True)
 raise SystemExit(rc)
@@ -398,7 +406,11 @@ raise SystemExit(rc)
     assert "title-refresh-failed" in trace.plain
     titles = re.findall(rb"\x1b\]0;([^\x07]*)\x07", trace.raw)
     assert titles[:3] == [b"uxon", _SESSION.encode(), b"uxon"]
-    assert titles.count(b"uxon") == 2  # refreshed opt-out survives refresh failure
+    # The second return initially uses the previous published setting; its
+    # background update disables title writes for the third return. A failed
+    # update must retain that opt-out, rather than re-enable dashboard titles.
+    assert titles.count(b"uxon") == 3
+    assert titles[-1] == _SESSION.encode()
 
 
 def test_two_clients_acknowledge_same_error_without_false_failure(terminal: _Terminal) -> None:

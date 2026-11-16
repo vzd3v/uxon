@@ -62,6 +62,7 @@ class DashboardRender:
         # / ``display`` on an unchanged value. ``_UNSET`` distinguishes
         # "never written" from a legitimate ``None``/``False`` value.
         self._last: dict[str, object] = {}
+        self._status_inputs: tuple | None = None
 
     _UNSET = object()
 
@@ -258,6 +259,7 @@ class DashboardRender:
         # bars reflect fleet totals even when a search filter narrows the
         # table.
         host_stats_local = state.main.host_stats if state.main is not None else None
+        self._status_inputs = (all_rows, in_by_host, active_bucket)
         status_lines = select_host_status_block(all_rows, state, host_stats_local, cfg_view)
         self._update_compact_bar(in_by_host, active_bucket, status_lines)
         self._update_fleet_bar(status_lines)
@@ -270,6 +272,30 @@ class DashboardRender:
             view=host._dashboard_ui.view_mode,
             forced_flat=forced_flat,
         )
+
+    def refresh_host_stats(self) -> None:
+        """Update host bars without rebuilding or sorting session rows."""
+        if self._status_inputs is None:
+            return
+        all_rows, in_by_host, active_bucket = self._status_inputs
+        host = self.host
+        stats = host.state.main.host_stats if host.state.main is not None else None
+        lines = select_host_status_block(
+            all_rows, host.state, stats, self.build_dashboard_cfg_view()
+        )
+        self._update_compact_bar(in_by_host, active_bucket, lines)
+        self._update_fleet_bar(lines)
+
+    def refresh_projects(self) -> None:
+        host = self.host
+        row = host.query_one("#action-open", ActionRow)
+        row.detail = host._open_detail()
+        row.set_enabled(
+            host.cfg.projects_loading
+            or bool(host.cfg.projects_error)
+            or bool(host.cfg.existing_projects)
+        )
+        row._render_text()
 
     def _update_compact_bar(
         self,
@@ -370,14 +396,11 @@ class DashboardRender:
         host = self.host
         try:
             host._refresh_cwd_row()
-            open_row = host.query_one("#action-open", ActionRow)
-            open_row.detail = host._open_detail()
-            open_row.set_enabled(host.cfg.loading or bool(host.cfg.existing_projects))
+            self.refresh_projects()
             host.query_one("#action-new", ActionRow).detail = main_render.new_project_detail(
                 host.cfg.new_project_root
             )
             host.query_one("#action-new", ActionRow)._render_text()
-            open_row._render_text()
         except Exception:
             return False
 

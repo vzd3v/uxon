@@ -116,17 +116,19 @@ new id adds it to the catalog (the id must match
 | Key | Type | Default | Purpose |
 |---|---|---|---|
 | `agents.<id>.binary` | string | the agent `<id>` | Executable name resolved on the execution backend's inherited `PATH`, or an absolute executable path. uxon does not source a login shell. |
-| `agents.<id>.version_args` | array | `["--version"]` | Non-interactive executable check used by launch, TUI and doctor. `[]` opts out and checks presence only. |
+| `agents.<id>.version_args` | array | `["--version"]` | Non-interactive executable check used by `doctor`. `[]` checks presence only. Launch and TUI never execute this command. |
 | `agents.<id>.default_args` | array | `[]` | Flags prepended to every invocation of this agent. |
 | `agents.<id>.install_hint` | string | `""` | Message shown by `doctor` / the agent picker when the binary is missing. |
 
-The executable check runs through the profile's launch account and execution
-backend. A failed check prevents a new direct launch and reports the concrete
-error, including failures behind an executable wrapper. A two-second timeout
-is inconclusive: the profile remains selectable and the TUI labels the timeout.
-Set `version_args = []` for tools without a reliable non-interactive version
-command. Existing sessions remain attachable and removable regardless of agent
-availability; these operations do not execute agent checks.
+Doctor executes this check through the profile's launch account and execution
+backend, reporting wrapper failures and two-second timeouts. Set
+`version_args = []` for tools without a reliable non-interactive version command.
+Launch preparation checks command presence only; actual execution failures
+remain visible in the failed terminal. The TUI discovers command presence once
+per process, in the background. Restart Uxon after installing an agent or
+changing the agent/execution catalog; `r` refreshes dashboard data without
+executing agents or repeating discovery. Existing sessions remain attachable
+and removable regardless of agent availability.
 
 Permission modes are an array-of-tables — **order is significant,
 the first entry is the default mode** (used when `--mode` is
@@ -519,8 +521,8 @@ global title options in `[tmux.options]` or the user's tmux configuration.
 
 The dashboard sets `uxon` once on each entry using the same standard OSC 0
 title scope. It writes only to a TTY with a nonempty `TERM` other than `dumb`
-or `linux`. Reentry uses refreshed configuration; if refresh fails, the last
-valid setting remains in effect. An already displayed title is not cleared
+or `linux`. Reentry initially uses the last published configuration while a
+background refresh reads changes. An already displayed title is not cleared
 when the setting is disabled.
 
 For remote attach, the peer's configuration controls the session title and

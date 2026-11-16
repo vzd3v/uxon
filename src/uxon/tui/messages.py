@@ -151,6 +151,7 @@ class _RefreshSourceLanded(Message):
         *,
         instance_epoch: int = -1,
         attempt_id: int = 0,
+        source_key: str = "",
     ) -> None:
         super().__init__()
         self.name = name
@@ -159,3 +160,4 @@ class _RefreshSourceLanded(Message):
         self.elapsed_ms = elapsed_ms
         self.instance_epoch = instance_epoch
         self.attempt_id = attempt_id
+        self.source_key = source_key

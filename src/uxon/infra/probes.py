@@ -9,6 +9,7 @@ from __future__ import annotations
 import platform
 import shlex
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -98,7 +99,11 @@ _INSTALL_HINTS = {
 
 
 def probe_host(
-    cfg: ExecutionConfigured, launch_user: str, catalog: dict[str, AgentSpec]
+    cfg: ExecutionConfigured,
+    launch_user: str,
+    catalog: dict[str, AgentSpec],
+    *,
+    check_agents: bool = True,
 ) -> HostReport:
     """Probe tmux + every agent in ``catalog`` on the host for ``launch_user``.
 
@@ -116,6 +121,8 @@ def probe_host(
 
     The probe uses one bounded ``sh -c`` command through the selected execution
     backend, retaining its PATH without sourcing login-shell configuration.
+    ``check_agents=False`` performs discovery only and never executes agents;
+    doctor retains the default executable diagnostics.
     """
     all_agent_ids = list(catalog.keys())
     all_agent_names = [catalog[aid].binary for aid in all_agent_ids]
@@ -134,7 +141,7 @@ def probe_host(
         dict.fromkeys(
             (spec.binary, spec.version_args)
             for spec in catalog.values()
-            if paths.get(spec.binary) is not None and spec.version_args
+            if check_agents and paths.get(spec.binary) is not None and spec.version_args
         )
     )
 
@@ -152,7 +159,7 @@ def probe_host(
         path = paths.get(spec.binary)
         if path is None:
             availability = AgentAvailability(status="missing", error="not on PATH")
-        elif not spec.version_args:
+        elif not check_agents or not spec.version_args:
             availability = AgentAvailability(status="ok", path=path)
         else:
             availability = replace(
@@ -246,6 +253,27 @@ def read_host_stats() -> HostStatsResult:
     if _CPU_DELAY_S > 0:
         time.sleep(_CPU_DELAY_S)
     busy_b, total_b = _cpu_busy_pair()
+    return _host_stats(busy_a, total_a, busy_b, total_b)
+
+
+class HostStatsSampler:
+    """Measure CPU across refreshes, without sleeping in a TUI collector."""
+
+    def __init__(self) -> None:
+        self._previous: tuple[int, int] | None = None
+        self._lock = threading.Lock()
+
+    def read(self) -> HostStatsResult | None:
+        # Reconfigured sources may overlap while an old read finishes.
+        with self._lock:
+            current = _cpu_busy_pair()
+            previous, self._previous = self._previous, current
+        if previous is None:
+            return None  # A CPU percentage needs two observations.
+        return _host_stats(*previous, *current)
+
+
+def _host_stats(busy_a: int, total_a: int, busy_b: int, total_b: int) -> HostStatsResult:
     cpu_pct = 0.0 if total_b <= total_a else 100.0 * (busy_b - busy_a) / (total_b - total_a)
     total_kib, avail_kib = _read_meminfo()
     used_kib = max(0, total_kib - avail_kib) if total_kib else 0

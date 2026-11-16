@@ -94,11 +94,13 @@ class TuiContext:
     ssh_multiplex: str = "auto"
     ssh_control_persist_seconds: int = 300
     fetch_concurrency: int = 16
-    # True until the first real refresh lands. The TUI distinguishes this
-    # from a loaded-but-empty state — skeleton ctx renders "Loading…" in
-    # session areas, server status and existing-projects detail; a fully
-    # loaded ctx with no sessions renders "No active sessions." instead.
+    # Session readiness: distinguish pending collection from a loaded, empty
+    # session list. Projects and host statistics have independent readiness.
     loading: bool = False
+    # Project readiness is independent of session/host readiness.
+    projects_loading: bool = False
+    projects_error: str = ""
+    stats_loading: bool = False
     # Local-host /proc snapshot consumed by ``HostStatusBar`` for the
     # locals bucket. ``None`` on cold start (skeleton ctx) and on probe
     # failure — the widget renders "pending…" in that case.
@@ -333,7 +335,7 @@ def build_items(ctx: TuiContext) -> list[Item]:
         Item(
             kind="action-open",
             label="Open project",
-            enabled=ctx.loading or bool(ctx.existing_projects),
+            enabled=ctx.projects_loading or bool(ctx.projects_error) or bool(ctx.existing_projects),
         )
     )
     items.append(

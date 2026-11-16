@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: MIT
 """Builder for the live :class:`TuiContext` from session data.
 
-:func:`build_tui_context` constructs a fresh :class:`TuiBridge` on every
-refresh, probes the live session/sudo/remote state, wraps each bridge
-callback with :func:`_wrap_tui_callback`, and assembles the immutable
-``TuiContext`` the TUI renders. The nested :func:`_make_remote_fetch`
-closure shares the fleet fetch semaphore across context rebuilds.
-Retry admission belongs to the App's worker coordinator.
+:func:`build_tui_context` assembles callbacks and independent collector
+specifications around a fresh :class:`TuiBridge`. Non-skeleton builds collect
+sessions; projects and host statistics have separate collectors. The host
+sampler and fleet fetch semaphore survive rebuilds. Retry admission belongs
+to the App's worker coordinator.
 
 This module lives in ``tui/`` and may import ``domain`` / ``infra`` /
 ``app`` / ``tui``; it must NOT import ``uxon.cli``.
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from uxon.app.project_browsing import list_project_directories
 from uxon.domain.config import Config
@@ -33,6 +32,7 @@ from uxon.tui.callback_wrap import _wrap_tui_callback
 
 if TYPE_CHECKING:
     from uxon.domain.sudo import SudoCapability
+    from uxon.infra.probes import HostStatsSampler
     from uxon.tui.context import TuiContext
 
 
@@ -45,14 +45,15 @@ def build_tui_context(
     skeleton: bool = False,
     sudo_caps_override: SudoCapability | None = None,
     fetch_semaphore: threading.Semaphore | None = None,
+    host_sampler: HostStatsSampler | None = None,
 ) -> TuiContext:
     """Build a TuiContext from live session data.
 
     When ``skeleton=True`` we skip every blocking I/O call (tmux, sudo
-    probes, project directory scans) and return a minimal context with
-    ``loading=True``. The TUI mounts immediately and a background worker
-    triggers ``on_refresh`` (which calls this again with
-    ``skeleton=False``) to fill in the real data.
+    probes) and return a minimal context with ``loading=True``. Session,
+    project and host collectors start independently while the UI initializes.
+    ``on_refresh`` rebuilds session/configuration data only; the other sources
+    publish their own results without waiting for that rebuild.
 
     ``sudo_caps_override`` lets the caller (typically ``on_refresh``)
     reuse a previously-probed :class:`SudoCapability` instead of
@@ -70,6 +71,13 @@ def build_tui_context(
     )
 
     bridge = TuiBridge(cfg, caller_user, launch_user, cwd)
+    from uxon.infra.probes import HostStatsSampler
+
+    sampler = host_sampler if host_sampler is not None else HostStatsSampler()
+    bridge._host_sampler = sampler
+    local_key = "\0".join(
+        (launch_user, cfg.new_project_root, cfg.execution.backend_for_user(launch_user).fingerprint)
+    )
 
     if skeleton:
         # Skeleton ctx skips the per-target probe — it's the fast first
@@ -219,15 +227,8 @@ def build_tui_context(
         if not cfg.launch.auto_mode
     }
 
-    if skeleton:
-        existing_projects: list[tuple[str, str]] = []
-        server_status = ServerStatus()
-    else:
-        existing_projects = list_project_directories(cfg, launch_user, cfg.new_project_root)
-        server_status = host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root)
-
-    # Pluggable refresh sources include one local context rebuild and one
-    # source per configured remote host.
+    # Sessions, project directories and host statistics are independent local
+    # sources; each configured remote host has its own source as well.
     # The skeleton ctx still gets the full source list. SourceSpec
     # construction is pure (just stores names + lambdas), no I/O, so
     # there is no cost to wiring it on the fast-path. The ctx is what
@@ -235,6 +236,7 @@ def build_tui_context(
     # an empty list there means the "Loading sessions…" placeholder
     # never gets replaced.
     from uxon.infra.remote.collector import fetch_remote_snapshot
+    from uxon.tui.main_data import HostData, ProjectsData
     from uxon.tui.refresh import SourceSpec
 
     # ``main_ctx_rebuild`` returns a fresh ``TuiContext``. The app's
@@ -252,6 +254,25 @@ def build_tui_context(
             fetch=lambda: on_refresh(),
             cadence_seconds_attr="tui_refresh_interval_seconds",
             kick_on_mount=True,
+            prefetch=True,
+        ),
+        SourceSpec(
+            name="local_projects",
+            key=local_key,
+            fetch=lambda: ProjectsData(
+                cfg.new_project_root,
+                tuple(list_project_directories(cfg, launch_user, cfg.new_project_root)),
+            ),
+            prefetch=True,
+        ),
+        SourceSpec(
+            name="local_stats",
+            key=local_key,
+            fetch=lambda: HostData(
+                host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root),
+                sampler.read(),
+            ),
+            prefetch=True,
         ),
     ]
     # One source per configured remote host. Each runs in its own
@@ -303,19 +324,6 @@ def build_tui_context(
             )
         )
 
-    # Local /proc snapshot for the HostStatusBar's locals bucket. Skip
-    # on the skeleton tick (first frame must paint immediately); on the
-    # real refresh tick treat probe failure as "pending…" — the
-    # selector renders the absence rather than the error.
-    host_stats: Any = None
-    if not skeleton:
-        try:
-            from uxon.infra.probes import read_host_stats
-
-            host_stats = read_host_stats()
-        except Exception:  # pragma: no cover — defensive
-            host_stats = None
-
     return TuiContext(
         sessions=tui_own,
         total_cpu=total_cpu,
@@ -324,10 +332,11 @@ def build_tui_context(
         cwd=cwd,
         cwd_short=cwd_short,
         new_project_root=cfg.new_project_root,
-        existing_projects=existing_projects,
-        server_status=server_status,
+        existing_projects=[],
+        projects_loading=True,
+        stats_loading=True,
+        server_status=ServerStatus(),
         loading=skeleton,
-        host_stats=host_stats,
         tui_refresh_interval_seconds=cfg.tui_refresh_interval_seconds,
         tui_ssh_refresh_interval_seconds=cfg.tui_ssh_refresh_interval_seconds,
         tmux_set_terminal_title=cfg.tmux_set_terminal_title,

@@ -47,6 +47,7 @@ from uxon.infra.run import run_query
 if TYPE_CHECKING:
     from uxon.domain.launch_request import LaunchRequest
     from uxon.domain.sudo import SudoCapability
+    from uxon.infra.probes import HostStatsSampler
     from uxon.tui.context import TuiContext
 
 
@@ -73,6 +74,7 @@ class TuiBridge:
         # first real load probes; the probed caps thereafter (one-shot).
         self.captured_sudo_caps: SudoCapability | None = None
         self._fetch_sem: threading.Semaphore | None = None
+        self._host_sampler: HostStatsSampler | None = None
 
     # ── attach / kill ──
 
@@ -234,14 +236,20 @@ class TuiBridge:
         from uxon.tui.context_builder import build_tui_context
 
         fresh_cfg = config_loader.load_config()
-        return build_tui_context(
+        ctx = build_tui_context(
             fresh_cfg,
             self.caller_user,
             self.launch_user,
             self.cwd,
             sudo_caps_override=self.captured_sudo_caps,
             fetch_semaphore=self._fetch_sem,
+            host_sampler=self._host_sampler,
         )
+        # Keep the one-shot result even if this App exits before the context
+        # lands. A handoff may reuse this callback while the next UI mounts.
+        self.captured_sudo_caps = ctx.sudo_caps
+        self.sudo_caps = ctx.sudo_caps
+        return ctx
 
     def on_probe_link_health(self) -> object | None:
         return host_status_probe.read_ssh_link_health_status()

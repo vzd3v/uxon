@@ -257,7 +257,7 @@ def _probe_host_for(
     from uxon.infra import probes
 
     catalog = {aid: cfg.agents[aid] for aid in agent_ids}
-    return probes.probe_host(cfg, launch_user, catalog)
+    return probes.probe_host(cfg, launch_user, catalog, check_agents=False)
 
 
 def _fail_if_tmux_missing(report: HostReport) -> None:

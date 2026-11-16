@@ -299,7 +299,7 @@ class MainScreen(Screen):
                 self.cfg.server_status,
                 self._link_health_now(),
                 self.state.refresh_tick,
-                loading=self.cfg.loading,
+                loading=self.cfg.stats_loading,
             )
             yield Static(line.text, id="server-status", classes="-alert" if line.alert else "")
             # Launch actions — a vertical stack of flat single-line
@@ -311,10 +311,9 @@ class MainScreen(Screen):
                 kind="action-open",
                 label="Open project",
                 detail=self._open_detail(),
-                # While loading we don't yet know whether projects exist.
-                # Keep the row enabled so it isn't dimmed; activation falls
-                # through to the existing "no projects" notify path.
-                enabled=self.cfg.loading or bool(self.cfg.existing_projects),
+                enabled=self.cfg.projects_loading
+                or bool(self.cfg.projects_error)
+                or bool(self.cfg.existing_projects),
                 id="action-open",
             )
             yield ActionRow(
@@ -427,7 +426,7 @@ class MainScreen(Screen):
 
     def _open_detail(self) -> str:
         return main_render.open_detail(
-            loading=self.cfg.loading,
+            loading=self.cfg.projects_loading,
             new_project_root=self.cfg.new_project_root,
         )
 
@@ -438,6 +437,7 @@ class MainScreen(Screen):
         # response. ``#sessions-dashboard`` (the unified
         # :class:`SessionListView`) owns row display end-to-end.
         self._refresh_dashboard()
+
         self.call_after_refresh(self._update_status_line)
         if self._restore_focus_key and self._focus_key(self._restore_focus_key):
             # Closest proxy to "first frame painted" without a renderer
@@ -451,6 +451,11 @@ class MainScreen(Screen):
         import time as _time  # noqa: PLC0415
 
         _debug("startup", at="first_paint", ts=_time.monotonic())
+
+    def on_screen_resume(self) -> None:
+        # Results may have landed while a modal covered the dashboard.
+        # Flush the retained render batch without waiting for another poll.
+        self.app._render.flush_pending()  # type: ignore[attr-defined]
 
     def on_show(self) -> None:
         if not self._restore_focus_key:
@@ -554,10 +559,8 @@ class MainScreen(Screen):
 
     def action_refresh(self) -> None:
         # Dispatch through the app so the refresh runs in a worker
-        # thread and the event loop stays responsive. Also re-run the
-        # host probe so newly-installed tmux/agents show up after a
-        # manual refresh — without this, ``r`` would only re-fetch
-        # session state and the missing-agents modal would never recover.
+        # thread and the event loop stays responsive. Binary discovery
+        # is cached for this process; refresh does not execute agents.
         self.app.kick_refresh(manual=True)  # type: ignore[attr-defined]
         kick = getattr(self.app, "_kick_host_probe", None)
         if callable(kick):
@@ -1011,7 +1014,7 @@ class MainScreen(Screen):
             self.cfg.server_status,
             self._link_health_now(),
             self.state.refresh_tick,
-            loading=self.cfg.loading,
+            loading=self.cfg.stats_loading,
         )
         status = self.query_one("#server-status", Static)
         prev = self._status_last

@@ -88,6 +88,10 @@ class RenderScheduler:
             return
         self._timer = self._app.set_timer(delay, self._fire)
 
+    def flush_pending(self) -> None:
+        """Apply a retained batch when the dashboard becomes visible again."""
+        self._fire()
+
     def _fire(self) -> None:
         if self._timer is not None:
             self._timer.stop()

@@ -107,7 +107,7 @@ def _stub_probe_host_by_default(request: pytest.FixtureRequest):
         yield
         return
 
-    def report(_cfg, user, catalog):
+    def report(_cfg, user, catalog, *, check_agents=True):
         return HostReport(
             tmux=BinaryStatus("tmux", "/usr/bin/tmux", ""),
             agents={

@@ -43,7 +43,7 @@ from uxon.domain.sudo import SudoCapability
 from uxon.infra import probes
 from uxon.tui.context import LaunchProfileOption
 
-probes.probe_host = lambda cfg, user, catalog: HostReport(
+probes.probe_host = lambda cfg, user, catalog, *, check_agents=True: HostReport(
     tmux=BinaryStatus('tmux', '/usr/bin/tmux', ''),
     agents={aid: BinaryStatus(spec.binary, f'/usr/bin/{spec.binary}', '')
             for aid, spec in catalog.items()},

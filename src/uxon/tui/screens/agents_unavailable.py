@@ -89,14 +89,14 @@ class AgentsUnavailableScreen(CardModal[None]):
             intro = (
                 f"uxon failed to probe installed agents: {self._error}\n"
                 "Fix the host (e.g. sudo NOPASSWD for the launch user), "
-                "dismiss this message, then press 'r'."
+                "then restart uxon."
             )
-            footer = "After the probe succeeds the agent list will populate."
+            footer = "Command discovery runs once per uxon process."
         elif self._enabled_profiles:
             title = "No agents available"
             intro = (
-                "uxon could not run any of the configured agents.\n"
-                "Fix the reported failure, dismiss this message, then press 'r'."
+                "No configured launch profile is available.\n"
+                "Fix the reported failure, then restart uxon."
             )
             footer = "Configured in config.toml → [launch] enabled_profiles"
         else:
@@ -104,7 +104,7 @@ class AgentsUnavailableScreen(CardModal[None]):
             intro = (
                 "uxon is in auto-mode (no [launch].enabled_profiles in config) and "
                 "found no known agent installed.\n"
-                "Install one of the below, dismiss this message, then press 'r'."
+                "Install one of the below, then restart uxon."
             )
             footer = "Pin a strict subset via [launch].enabled_profiles in config.toml"
         with self.card():

@@ -157,7 +157,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             # force-push the unavailable modal here. The host probe
             # worker re-arms the gate via the transition path.
             self.app.notify(
-                "No agents installed — install one and press 'r' to retry.",
+                "No agents installed — install one and restart uxon.",
                 severity="warning",
                 timeout=6,
             )
@@ -310,7 +310,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             # Same toast pattern as on_mount: surface a hint and let the
             # background host probe re-arm the unavailable modal.
             self.app.notify(
-                "No agents installed — install one and press 'r' to retry.",
+                "No agents installed — install one and restart uxon.",
                 severity="warning",
                 timeout=6,
             )
