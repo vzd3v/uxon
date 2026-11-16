@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import threading
 from dataclasses import replace
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from textual.widgets import Label, ListItem, ListView, Static
 from uxon.domain.execution import ExecutionBackendSpec, ExecutionConfig
 from uxon.domain.launch_request import HandoffResult, LaunchRequest
 from uxon.domain.status import ServerStatus
+from uxon.infra.identity import process_user
 from uxon.tui.app import UxonApp
 from uxon.tui.background import BackgroundSources
 from uxon.tui.context_builder import build_tui_context
@@ -206,6 +209,79 @@ def test_root_update_during_navigation_survives_back_without_clearing_pending_re
             release.set()
 
     asyncio.run(exercise())
+
+
+@pytest.mark.usefixtures("real_execution")
+@pytest.mark.parametrize(
+    "failure,diagnostic",
+    [
+        ("permissions", "Permission denied"),
+        ("backend_timeout", "timed out"),
+    ],
+)
+def test_real_project_read_failures_leave_ui_and_sibling_source_alive(
+    tmp_path, failure, diagnostic
+):
+    if failure == "permissions" and os.geteuid() == 0:
+        pytest.skip("root bypasses directory mode permissions")
+    root = tmp_path / "projects"
+    (root / "existing").mkdir(parents=True)
+    original_mode = root.stat().st_mode & 0o7777
+    cfg = make_config(allowed_roots=[str(tmp_path)], new_project_root=str(root))
+    if failure == "backend_timeout":
+        sleeper = ExecutionBackendSpec(
+            "sleeper",
+            "command",
+            (sys.executable, "-c", "import time; time.sleep(2)", "{user}"),
+            probe_timeout_seconds=0.1,
+        )
+        cfg = replace(
+            cfg,
+            execution=ExecutionConfig(
+                default_backend="sleeper",
+                backends={**cfg.execution.backends, "sleeper": sleeper},
+            ),
+        )
+    user = process_user()
+    ctx = build_tui_context(cfg, user, user, str(tmp_path), skeleton=True)
+    projects = next(spec for spec in ctx.refresh_sources if spec.name == "local_projects")
+    sibling = SourceSpec(
+        "local_stats",
+        lambda: HostData(ServerStatus(load="0.42"), None),
+        prefetch=True,
+        key=projects.key,
+    )
+    # Keep the real project adapter; other host/session/account probes do not
+    # belong to this failure test. The sibling tests independent delivery.
+    ctx = replace(ctx, refresh_sources=[projects, sibling], cwd_writable=True)
+
+    async def exercise():
+        background = BackgroundSources()
+        try:
+            background.prefetch(ctx.refresh_sources)
+            result = background.start(projects, reuse=True)
+            app = UxonApp(ctx, background=background, probe_agents=False)
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.click("#action-open")
+                read = await asyncio.wait_for(asyncio.wrap_future(result), 2)
+                await asyncio.wait_for(app.workers.wait_for_complete(), 2)
+                await pilot.pause()
+                assert read.error and diagnostic in read.error
+                assert not app.ctx.projects_loading and diagnostic in app.ctx.projects_error
+                assert app.ctx.server_status.load == "0.42" and not app.ctx.stats_loading
+                assert isinstance(app.screen, ExistingProjectScreen)
+                assert diagnostic in str(app.screen.query_one("#browser-status", Static).content)
+                await pilot.press("a", "l", "i", "v", "e")
+                assert app.screen.query_one(FilterInput).value == "alive"
+        finally:
+            background.close()
+
+    try:
+        if failure == "permissions":
+            root.chmod(0)
+        asyncio.run(exercise())
+    finally:
+        root.chmod(original_mode)
 
 
 @pytest.mark.parametrize("changed", ["root", "backend"])

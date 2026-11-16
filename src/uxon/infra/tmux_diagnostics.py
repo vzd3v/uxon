@@ -127,7 +127,7 @@ def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[
                     "set-option",
                     "-w",
                     "pane-border-format",
-                    "#{?pane_dead,Process exited#{?pane_dead_status, (#{pane_dead_status}),}. PgUp: output. Enter / Esc / q: close and return to Uxon.,#{E:@uxon-border-format}}",
+                    "#{?pane_dead,Process exited#{?pane_dead_status, (#{pane_dead_status}),}. Enter / Esc / q: close and return to Uxon.,#{E:@uxon-border-format}}",
                 ],
             )
         )
@@ -199,6 +199,11 @@ def _diagnostics_commands(session: str, live_table: str, bindings: str) -> list[
         bind(key, command)
     add("set-option", "-t", session, "@uxon-live-key-table", live_table)
     add("set-option", "-t", session, "@uxon-diagnostics-table", key_table)
+    # tmux's default death banner moves the cursor to the last row, pushing
+    # the actual error into history on resize. Our border already shows the
+    # exit status. Install before releasing the child; keep its output intact.
+    # -q preserves older distribution backports without this format option.
+    add("set-option", "-wq", "-t", session, "remain-on-exit-format", "")
     # Pane/window events are window-scoped in tmux. A guarded global hook
     # covers new and linked windows without installing per-window watchers.
     for hook in ("pane-died", "window-pane-changed", "window-layout-changed"):

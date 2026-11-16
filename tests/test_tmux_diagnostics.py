@@ -678,9 +678,56 @@ def test_acknowledgement_closes_fresh_failed_sessions_and_records(
             assert terminal.snapshot().sessions == () and not record.exists()
 
 
+def test_initial_managed_exec_failure_stays_visible_after_late_attach_and_resize(
+    terminal: _Terminal,
+):
+    executable = terminal.directory / "broken-interpreter-agent"
+    executable.write_text(f"#!{terminal.directory / 'missing-interpreter'}\n")
+    executable.chmod(0o755)
+    terminal.cfg.agents["claude"] = replace(terminal.cfg.agents["claude"], binary=str(executable))
+    # New windows inherit this unless initial managed preparation overrides it
+    # before releasing the workload. No fresh_session/install for this new launch.
+    terminal.command("set-option", "-gw", "remain-on-exit-format", "UNWANTED_DEATH_BANNER")
+    resolved = resolve_launch_profile(
+        terminal.cfg, terminal.user, "claude", str(terminal.directory), "normal"
+    )
+    name = "uxon-initial@claude"
+    request, pending = tmux.build_managed_tmux_launch_request(
+        str(terminal.directory),
+        name,
+        ParsedArgs(action="run"),
+        terminal.cfg,
+        None,
+        resolved_profile=resolved,
+        server_running=True,
+    )
+    tmux.prepare_managed_launch(request)
+    _wait(lambda: terminal.value(name, "#{pane_dead}") == "1")
+    assert terminal.value(name, "#{pane_dead_status}") == "127"
+    target = next(row for row in terminal.snapshot().sessions if row.name == name)
+    client = terminal.attach(tmux._build_tmux_attach_request(target, terminal.cfg, terminal.user))
+    pane = terminal.value(name, "#{pane_id}")
+    terminal.command("resize-window", "-t", name, "-x", "80", "-y", "12")
+    visible = terminal.command("capture-pane", "-p", "-t", pane)
+    assert "cannot execute" in visible and str(executable) in visible
+    assert "UNWANTED_DEATH_BANNER" not in visible
+    assert terminal.value(pane, "#{pane_in_mode}") == "0"
+    _wait(lambda: "Process exited (127)" in terminal.value(pane, "#{E:pane-border-format}"))
+    assert b"broken-interpreter-agent" in client.receive(b"cannot execute")
+    client.send(b"q")
+    result = client.finish()
+    assert (result["rc"], result["warning"]) == (0, "")
+    assert not launch_records.record_path(pending).exists()
+    assert all(row.name != name for row in terminal.snapshot().sessions)
+    assert terminal.record.exists()  # The unrelated initial fixture session survives.
+
+
 @pytest.mark.parametrize("exists, status", [(False, "127"), (True, "126")])
-def test_failed_screen_page_up_exposes_error_hidden_by_resize(terminal: _Terminal, exists, status):
+def test_failed_screen_keeps_error_visible_after_late_attach_and_resize(
+    terminal: _Terminal, exists, status
+):
     pane = terminal.value(_SESSION, "#{pane_id}")
+    terminal.command("resize-window", "-t", _SESSION, "-x", "80", "-y", "24")
     executable = terminal.directory / "broken-agent"
     if exists:
         executable.write_text("#!/bin/sh\nexit 0\n")  # Present, but not executable.
@@ -707,17 +754,19 @@ def test_failed_screen_page_up_exposes_error_hidden_by_resize(terminal: _Termina
     assert terminal.value(pane, "#{pane_dead_status}") == status
     client = terminal.attach()
     terminal.command("resize-window", "-t", _SESSION, "-x", "80", "-y", "12")
-    _wait(lambda: "PgUp: output" in terminal.value(pane, "#{E:pane-border-format}"))
+    _wait(lambda: f"Process exited ({status})" in terminal.value(pane, "#{E:pane-border-format}"))
+    footer = terminal.value(pane, "#{E:pane-border-format}")
+    assert "Enter / Esc / q" in footer and "PgUp" not in footer
+    assert terminal.value(pane, "#{pane_in_mode}") == "0"
+    visible = terminal.command("capture-pane", "-p", "-t", pane)
+    assert "cannot execute" in visible and str(executable) in visible
+    assert "Pane is dead" not in visible and "Traceback" not in visible
     history = terminal.command("capture-pane", "-p", "-S", "-", "-t", pane)
     assert "cannot execute" in history and "broken-agent" in history and "Traceback" not in history
-    client.receive(b"PgUp: output")
-    client.send(b"\x1b[5~")
-    _wait(lambda: terminal.value(pane, "#{pane_in_mode}") == "1")
-    # Shrinking 24 rows to 12 can leave more than one page of blank history.
-    # Further PgUp keys follow native copy-mode bindings.
-    client.send(b"\x1b[5~")
-    client.receive(b"cannot execute")
-    terminal.command("send-keys", "-t", pane, "-X", "cancel")
+    output = client.receive(b"cannot execute")
+    assert b"broken-agent" in output and b"Pane is dead" not in output
+    assert terminal.value(pane, "#{pane_in_mode}") == "0"
     client.send(b"q")
-    assert client.finish()["warning"] == ""
+    result = client.finish()
+    assert (result["rc"], result["warning"]) == (0, "")
     assert terminal.snapshot().sessions == () and not terminal.record.exists()

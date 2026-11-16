@@ -14,6 +14,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Opening projects immediately after startup shows loading, errors or the loaded list correctly. Projects, sessions and host statistics load independently alongside UI initialization.
 - Returning from a session shows the last published dashboard without waiting for a full refresh. Project and statistics updates preserve input and selection without rebuilding session rows; CPU sampling no longer pauses TUI collectors.
+- Project permission errors and execution-backend timeouts show a recoverable error without terminating the interface or blocking other dashboard data.
+- New managed launches keep execution errors visible after attaching and resizing the terminal, without requiring scrollback, on tmux builds supporting `remain-on-exit-format`. Exit status and Enter / Esc / q remain on the same screen; already-dead panes retain their existing output.
 
 ## [4.0.1] — 2026-11-14
 

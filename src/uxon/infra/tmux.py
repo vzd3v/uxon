@@ -675,7 +675,7 @@ def _build_tmux_launch_request(
         + ["new-session", "-d", "-s", session, "-c", target_dir]
         + session_env
         + bootstrap_cmd
-        # Retain failed terminals with tmux's native diagnostic format.
+        # Retain failed terminals; diagnostics are installed before release.
         + [
             ";",
             "set-window-option",

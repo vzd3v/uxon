@@ -259,18 +259,24 @@ def build_tui_context(
         SourceSpec(
             name="local_projects",
             key=local_key,
-            fetch=lambda: ProjectsData(
-                cfg.new_project_root,
-                tuple(list_project_directories(cfg, launch_user, cfg.new_project_root)),
+            fetch=_wrap_tui_callback(
+                lambda: ProjectsData(
+                    cfg.new_project_root,
+                    tuple(list_project_directories(cfg, launch_user, cfg.new_project_root)),
+                ),
+                _CbErr,
             ),
             prefetch=True,
         ),
         SourceSpec(
             name="local_stats",
             key=local_key,
-            fetch=lambda: HostData(
-                host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root),
-                sampler.read(),
+            fetch=_wrap_tui_callback(
+                lambda: HostData(
+                    host_status_probe.read_server_status(cfg, launch_user, cfg.new_project_root),
+                    sampler.read(),
+                ),
+                _CbErr,
             ),
             prefetch=True,
         ),

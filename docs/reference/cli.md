@@ -401,8 +401,9 @@ every launch.
 
 - **Allowed-roots mismatch** — `run` / `new` exit before touching
   `tmux`. Add the directory to `allowed_roots` or move the project.
-- **Agent exits before attach** — a non-zero exit leaves the failed pane and
-  its scrollback available for inspection; close the pane after reviewing it.
+- **Agent exits before attach** — a non-zero exit retains the output and exit
+  status in the same terminal. Press Enter / Esc / q after reviewing the error
+  to return to Uxon; scrollback remains available.
   A successful exit removes the session normally.
 - **Foreign `tmux` server** — when `$TMUX` names a socket `uxon`
   doesn't manage, `uxon` prints `Ctrl-b d first` and exits cleanly.
