@@ -9,9 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Git discovery starts while browsing projects and choosing profiles, with bounded reads shared by profiles using the same account/backend. Enter never waits: pending or failed discovery continues in the selected folder; ready results offer Current checkout first.
 - TUI and launch preparation no longer execute agents to check their versions. TUI command discovery runs once in the background and is reused across dashboard entries; restart Uxon to discover newly installed agents. Doctor keeps its existing executable checks.
 
 ### Fixed
+- Workspace choices consistently control session checks, runtime preparation and the launched directory. Git discovery errors stay visible inline; separate Git directories and unusual path characters are handled explicitly.
+- Worktree include copying rejects overwrites, tracked conflicts and symlink traversal while preserving file permissions. Exclusion updates preserve shared-file ownership and access rules; failures after worktree creation report the retained path and failed stage.
 - Opening projects immediately after startup shows loading, errors or the loaded list correctly. Projects, sessions and host statistics load independently alongside UI initialization.
 - Returning from a session shows the last published dashboard without waiting for a full refresh. Project and statistics updates preserve input and selection without rebuilding session rows; CPU sampling no longer pauses TUI collectors.
 - Project permission errors and execution-backend timeouts show a recoverable error without terminating the interface or blocking other dashboard data.

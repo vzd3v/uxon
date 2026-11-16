@@ -22,6 +22,7 @@ from uxon.domain.sudo import SudoCapability
 if TYPE_CHECKING:
     from uxon.app.launch import RuntimeGate
     from uxon.infra.probes import HostStatsResult
+    from uxon.infra.worktrees import GitDiscovery
 
 ExistingSessionChoice = (
     tuple[str, bool] | tuple[str, str, bool] | tuple[str, str, bool, SessionIdentity]
@@ -187,8 +188,10 @@ class TuiContext:
             cmd=("true",), label="noop-launch-new"
         )
     )
-    on_launch_existing: Callable[[str, str, str], LaunchRequest] = (
-        lambda name, profile_id, mode_id: LaunchRequest(cmd=("true",), label="noop-launch-existing")
+    on_launch_existing: Callable[..., LaunchRequest] = (
+        lambda name, profile_id, mode_id, target_dir=None: LaunchRequest(
+            cmd=("true",), label="noop-launch-existing"
+        )
     )
     # Relative paths under new_project_root; directory I/O runs off-loop.
     on_list_project_directories: Callable[[str], list[tuple[str, str]]] = lambda path: []
@@ -219,6 +222,8 @@ class TuiContext:
     # Resolve profile+mode, validate target-user access, then enumerate git
     # worktrees off-loop. Empty means non-git; errors abort the launch.
     on_probe_worktrees: Callable[[str, str, str], list] = lambda cwd, profile_id, mode_id: []
+    # Advisory filesystem discovery, shared by profiles using the same user.
+    on_discover_worktrees: Callable[[str, str], GitDiscovery | None] = lambda path, user: None
     # Worktree create → plan_worktree_launch. Builds + launches a
     # uxon-managed worktree for ``branch`` under the repo at ``repo_root``.
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest] = (

@@ -8,129 +8,148 @@ sudo prefix). Pure git-naming helpers live in :mod:`uxon.domain.session`.
 
 from __future__ import annotations
 
+import json
 import os
-import shlex
+import subprocess
+import sys
 
 from uxon.domain.config import Config
+from uxon.domain.execution import LOCAL_PROBE_TIMEOUT_SECONDS
 from uxon.errors import fail
-from uxon.infra.execution import canonicalize_path, command_prefix, path_facts
+from uxon.infra.execution import command_prefix
 from uxon.infra.process import run_cmd
 from uxon.infra.run import run_query
+from uxon.infra.worktrees import GitDiscovery, Workspace, WorktreeProbeError
 
 
 def git_repo_root(cwd: str) -> str | None:
-    cp = run_query(
-        ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-    )
-    if cp.returncode != 0:
-        return None
-    out = (cp.stdout or "").strip()
-    if not out:
-        return None
-    from uxon.infra.path_probe import canonical_existing
+    from uxon.infra.git_probe import discover
 
-    return canonical_existing(out)
+    result = discover(cwd, LOCAL_PROBE_TIMEOUT_SECONDS)
+    return None if result is None else result.current_root or result.source_anchor
 
 
 def git_repo_root_as_user(cfg: Config, cwd: str, target_user: str) -> str | None:
-    cp = run_query(
-        command_prefix(cfg, target_user, interactive=True)
-        + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-    )
-    if cp.returncode != 0:
-        return None
-    out = (cp.stdout or "").strip()
-    if not out:
-        return None
-    return canonicalize_path(cfg, target_user, out, intended=False)
+    try:
+        result = discover_workspaces(cfg, cwd, target_user)
+    except WorktreeProbeError as exc:
+        fail(str(exc))
+    return None if result is None else result.current_root or result.source_anchor
 
 
 def git_repo_root_nonint_as_user(cfg: Config, cwd: str, target_user: str) -> str | None:
     """Non-interactive variant of :func:`git_repo_root_as_user`.
 
-    Uses :func:`nonint_command_prefix_for_user` (``sudo -n``) so a missing
+    Uses a non-interactive execution prefix (``sudo -n`` locally) so a missing
     NOPASSWD grant fails fast instead of blocking on a hidden password
     prompt — required for the fullscreen TUI's worktree probe.
     """
-    cp = run_query(
-        command_prefix(cfg, target_user, interactive=False)
-        + ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-        timeout=cfg.execution.backend_for_user(target_user).probe_timeout_seconds,
-    )
-    if cp.returncode != 0:
-        return None
-    out = (cp.stdout or "").strip()
-    if not out:
-        return None
-    return canonicalize_path(cfg, target_user, out, intended=False)
+    return git_repo_root_as_user(cfg, cwd, target_user)
 
 
 def git_common_dir_root_as_user(cfg: Config, cwd: str, target_user: str) -> str | None:
-    """Resolve the *primary* working tree of the repo containing ``cwd``.
+    """Resolve Git's primary working tree or a bare repository's source anchor."""
+    try:
+        result = discover_workspaces(cfg, cwd, target_user)
+    except WorktreeProbeError as exc:
+        fail(str(exc))
+    return None if result is None else result.primary_root or result.source_anchor
 
-    Uses ``git rev-parse --git-common-dir``: on a linked worktree this
-    returns the primary repo's ``.git`` (whereas ``--show-toplevel``
-    returns the *linked* worktree root). The primary root is that dir's
-    parent. This anchors new worktrees to the primary repo even when
-    launched from inside another worktree.
-    Non-interactive prefix, same rationale as the resolver above.
+
+def _worktree_helper(
+    cfg: Config, user: str, mode: str, path: str, *, destination: str | None = None
+) -> dict:
+    backend = cfg.execution.backend_for_user(user)
+    argv = command_prefix(cfg, user, interactive=False) + [
+        sys.executable,
+        "-m",
+        "uxon.infra.git_probe",
+        "--mode",
+        mode,
+        "--path",
+        path,
+        "--timeout",
+        str(backend.probe_timeout_seconds),
+    ]
+    if destination is not None:
+        argv += ["--destination", destination]
+    try:
+        # Filesystem mutation keeps the existing unbounded copy policy. Its
+        # Git reads have one deadline; killing a writer could strand a temp.
+        cp = run_query(argv, timeout=backend.probe_timeout_seconds if mode == "discover" else None)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WorktreeProbeError(f"Git {mode} for {path!r} as {user!r}: {exc}") from exc
+    try:
+        payload = json.loads(cp.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        detail = (cp.stderr or "").strip()
+        raise WorktreeProbeError(
+            f"Git {mode} returned invalid helper output: {detail or exc}"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("ok") is not True or cp.returncode:
+        detail = payload.get("error") if isinstance(payload, dict) else None
+        raise WorktreeProbeError(
+            f"Git {mode} for {path!r}: {detail or cp.stderr or 'helper failed'}"
+        )
+    return payload
+
+
+def discover_workspaces(cfg: Config, target_path: str, user: str) -> GitDiscovery | None:
+    """Read target-user Git state, without profile/agent/tmux authorization.
+
+    Only a confirmed non-repository returns None. Backend failures, unreadable
+    metadata, invalid configuration and Git errors raise WorktreeProbeError.
+    The caller may share this read across profiles with the same execution key.
     """
-    cp = run_query(
-        command_prefix(cfg, target_user, interactive=False)
-        + ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-        timeout=cfg.execution.backend_for_user(target_user).probe_timeout_seconds,
-    )
-    if cp.returncode != 0:
+    payload = _worktree_helper(cfg, user, "discover", target_path)
+    data = payload.get("discovery")
+    if data is None and "discovery" in payload:
         return None
-    common = (cp.stdout or "").strip()
-    if not common:
-        return None
-    common_abs = common if os.path.isabs(common) else os.path.join(cwd, common)
-    # ``<root>/.git`` → ``<root>``.
-    return canonicalize_path(cfg, target_user, os.path.dirname(common_abs), intended=False)
-
-
-_UXON_EXCLUDE_LINE = ".uxon/"
+    try:
+        if not isinstance(data, dict):
+            raise ValueError("missing discovery object")
+        for key in ("target_path", "source_anchor", "common_dir"):
+            if not isinstance(data.get(key), str) or not os.path.isabs(data[key]):
+                raise ValueError(f"invalid {key}")
+        for key in ("current_root", "primary_root"):
+            if data.get(key) is not None and (
+                not isinstance(data[key], str) or not os.path.isabs(data[key])
+            ):
+                raise ValueError(f"invalid {key}")
+        rows = data["workspaces"]
+        if not isinstance(rows, list):
+            raise ValueError("invalid workspace list")
+        workspaces = []
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or any(not isinstance(row.get(key), str) for key in ("path", "label", "branch"))
+                or not os.path.isabs(row["path"])
+                or not isinstance(row.get("is_primary"), bool)
+            ):
+                raise ValueError("invalid workspace record")
+            workspaces.append(Workspace(**row))
+        return GitDiscovery(
+            data["target_path"],
+            data["current_root"],
+            data["primary_root"],
+            data["source_anchor"],
+            data["common_dir"],
+            tuple(workspaces),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WorktreeProbeError(f"Git discovery returned invalid data: {exc}") from exc
 
 
 def write_uxon_exclude_entry(cfg: Config, repo_root: str, launch_user: str) -> None:
-    """Idempotently append ``.uxon/`` to ``.git/info/exclude`` as launch_user.
+    """Append to Git's exclude inode, preserving owner, mode and access ACL.
 
-    Local-only (never committed) and concurrency-safe: read-modify-write
-    via a temp file + atomic rename so two simultaneous ``launch_user``
-    creates can't double-append or clobber each other. Skipped by
-    the caller when ``worktree_root`` is set (out-of-repo worktree).
+    A directory lock serializes Uxon writers; external editors need not honor it.
     """
-    prefix = command_prefix(cfg, launch_user, interactive=True)
-    exclude_path = os.path.join(repo_root, ".git", "info", "exclude")
-    # Read current contents (tolerate absent file).
-    cp = run_query(
-        prefix + ["sh", "-c", f"cat {shlex.quote(exclude_path)} 2>/dev/null || true"],
-    )
-    current = cp.stdout or ""
-    if any(line.strip() == _UXON_EXCLUDE_LINE for line in current.splitlines()):
-        return  # already present — idempotent
-    new_contents = current
-    if new_contents and not new_contents.endswith("\n"):
-        new_contents += "\n"
-    new_contents += _UXON_EXCLUDE_LINE + "\n"
-    # Atomic temp-file-then-rename under the info/ dir (same filesystem),
-    # serialising the read-modify-write against concurrent writers.
-    info_dir = os.path.join(repo_root, ".git", "info")
-    script = (
-        f"mkdir -p {shlex.quote(info_dir)} && "
-        f"tmp=$(mktemp {shlex.quote(info_dir)}/exclude.XXXXXX) && "
-        f'cat > "$tmp" && mv -f "$tmp" {shlex.quote(exclude_path)}'
-    )
-    # run_cmd() does not forward stdin, so feed the new contents directly
-    # via run_query (which captures stdout/stderr like run_cmd) and fail()
-    # with the captured stderr on a non-zero exit.
-    cp = run_query(
-        prefix + ["sh", "-c", script],
-        input=new_contents,
-    )
-    if cp.returncode != 0:
-        fail((cp.stderr or "").strip() or "failed to write .git/info/exclude")
+    try:
+        _worktree_helper(cfg, launch_user, "exclude", repo_root)
+    except WorktreeProbeError as exc:
+        fail(str(exc))
 
 
 def copy_worktreeinclude_matches(cfg: Config, repo_root: str, dest: str, launch_user: str) -> None:
@@ -143,26 +162,10 @@ def copy_worktreeinclude_matches(cfg: Config, repo_root: str, dest: str, launch_
     by construction; git is the sole authority for ignore + match.
     No-op when ``.worktreeinclude`` is absent.
     """
-    prefix = command_prefix(cfg, launch_user, interactive=True)
-    include_file = os.path.join(repo_root, ".worktreeinclude")
-    if not path_facts(cfg, launch_user, include_file).exists:
-        return
-
-    def _ls(extra: list[str]) -> set[str]:
-        cp = run_query(
-            prefix + ["git", "-C", repo_root, "ls-files", "-o", "-i"] + extra,
-        )
-        if cp.returncode != 0:
-            return set()
-        return {ln for ln in (cp.stdout or "").splitlines() if ln.strip()}
-
-    set_a = _ls(["--exclude-standard"])
-    set_b = _ls([f"--exclude-from={include_file}"])
-    for rel in sorted(set_a & set_b):
-        src = os.path.join(repo_root, rel)
-        dst = os.path.join(dest, rel)
-        run_cmd(prefix + ["mkdir", "-p", os.path.dirname(dst)], check=True)
-        run_cmd(prefix + ["cp", "-p", src, dst], check=True)
+    try:
+        _worktree_helper(cfg, launch_user, "copy", repo_root, destination=dest)
+    except WorktreeProbeError as exc:
+        fail(str(exc))
 
 
 def _branch_exists_as_user(cfg: Config, repo_root: str, branch: str, launch_user: str) -> bool:

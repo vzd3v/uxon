@@ -109,6 +109,8 @@ class ExistingProjectScreen(CardModal["str | None"]):
         list_directories: Callable[[str], list[tuple[str, str]]] = lambda path: [],
         loading: bool = False,
         error: str = "",
+        on_highlight: Callable[[str | None], None] = lambda path: None,
+        git_status: Callable[[], str] = lambda: "",
     ) -> None:
         super().__init__()
         # Each entry: (name, compact_mtime).
@@ -123,6 +125,8 @@ class ExistingProjectScreen(CardModal["str | None"]):
         self._root_error = error
         self._root_pending = loading
         self._navigation_epoch = 0
+        self._on_highlight = on_highlight
+        self._git_status = git_status
         # Filtered view drives the ListView render and Enter's row
         # resolution; kept in sync with the input via ``on_filter_changed``.
         self._filtered: list[tuple[str, str]] = list(projects)
@@ -138,11 +142,26 @@ class ExistingProjectScreen(CardModal["str | None"]):
             ]
             yield CyclicListView(*items, id="existing-list")
             yield Static("", id="browser-status", markup=False)
+            yield Static("", id="git-status", markup=False)
             yield Footer()
 
     def on_mount(self) -> None:
         self._sync_match_count()
         self._sync_browser_status()
+        self.call_after_refresh(self._highlight_changed)
+
+    def update_git_status(self) -> None:
+        if self.is_mounted:
+            self.query_one("#git-status", Static).update(self._git_status())
+
+    def _highlight_changed(self) -> None:
+        if self.is_mounted:
+            self._on_highlight(self._snapshot().selected_path)
+            self.update_git_status()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if not self._loading:
+            self._highlight_changed()
 
     async def update_root(self, projects: list[tuple[str, str]], error: str = "") -> None:
         self._root_projects = list(projects)
@@ -165,6 +184,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
         self._loading = False
         self._root_pending = False
         self._sync_browser_status()
+        self._highlight_changed()
 
     def action_cancel(self) -> None:
         fi = self.query_one(FilterInput)
@@ -173,6 +193,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
             # rebuilds the list) and keep the modal open.
             fi.value = ""
             return
+        self._on_highlight(None)
         self.dismiss(None)
 
     def action_pick(self) -> None:
@@ -225,6 +246,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
         await self._render_list()
         self._loading = False
         self._sync_browser_status()
+        self._highlight_changed()
 
     def _directory_failed(self, epoch: int, exc: Exception) -> None:
         if not self.is_mounted or epoch != self._navigation_epoch:
@@ -270,6 +292,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
         await self._render_list(level.index)
         self._loading = False
         self._sync_browser_status()
+        self._highlight_changed()
 
     def action_cursor_up(self) -> None:
         self._move_cursor_wrapped(-1)
@@ -314,6 +337,9 @@ class ExistingProjectScreen(CardModal["str | None"]):
         path = str(PurePosixPath(self.project_root) / self._directory)
         self.query_one("#project-path", Static).update(f"  {path}/")
         self._sync_browser_status()
+
+        if not self._loading:
+            self._highlight_changed()
 
     def _sync_browser_status(self) -> None:
         status = (

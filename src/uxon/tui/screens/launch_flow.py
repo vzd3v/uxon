@@ -17,6 +17,7 @@ from .workspace import WorkspaceScreen
 from .worktree_branch import WorktreeBranchScreen
 
 if TYPE_CHECKING:
+    from ..context import TuiContext
     from ..state import MainIntent
     from .existing import ExistingProjectScreen as _ExistingProjectScreen  # noqa: F401
     from .main import MainScreen
@@ -30,7 +31,13 @@ class LaunchFlow:
         self._generation = 0
 
     def commit_with_runtime_gate(
-        self, target_dir: str, profile_id: str, mode_id: str, do_commit
+        self,
+        target_dir: str,
+        profile_id: str,
+        mode_id: str,
+        do_commit,
+        *,
+        context: TuiContext | None = None,
     ) -> None:
         """Probe the workload runtime for ``target_dir``, then run ``do_commit``.
 
@@ -51,7 +58,8 @@ class LaunchFlow:
         """
         host = self.host
 
-        gate_fn = host.cfg.on_runtime_gate
+        ctx = context if context is not None else host.cfg
+        gate_fn = ctx.on_runtime_gate
 
         def run_prepare_then_commit(gate) -> None:
             # The prepare shells out (start/create) — strictly off the loop.
@@ -123,14 +131,20 @@ class LaunchFlow:
                 host._attach_session(intent.user, intent.session_name)
 
     def attach_session(
-        self, user: str, session_name: str, expected: SessionIdentity | None = None
+        self,
+        user: str,
+        session_name: str,
+        expected: SessionIdentity | None = None,
+        *,
+        context: TuiContext | None = None,
     ) -> None:
         host = self.host
         # ``on_attach`` shells out to tmux — run it off the event loop so
         # the keystroke pump never starves.
         # Snapshot the bound callback on the loop: a background refresh may
         # swap ``host.cfg`` while the worker runs.
-        fn = host.cfg.on_attach
+        ctx = context if context is not None else host.cfg
+        fn = ctx.on_attach
         host.app.run_off_loop(  # type: ignore[attr-defined]
             lambda: fn(user, session_name, expected),
             on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
@@ -179,6 +193,7 @@ class LaunchFlow:
         mode_id: str,
         on_new,
         probe=None,
+        context: TuiContext | None = None,
     ) -> None:
         """Probe for compatible existing sessions; if any, prompt the operator.
 
@@ -187,9 +202,8 @@ class LaunchFlow:
         before lookup. ``on_new`` is invoked when the operator chooses
         "new alongside" (or when the probe returns no matches) — it's
         the closure that actually commits the launch by calling the
-        corresponding ``on_launch_*`` callback. The attach branch routes
-        through the existing ``_attach_session`` so audit + LaunchRequest
-        construction stay in one place.
+        corresponding ``on_launch_*`` callback. The attach branch uses the
+        same captured context so a refresh cannot change its execution account.
 
         ``probe`` defaults to the plain path-based
         ``on_probe_existing_sessions`` (primary / non-git target). A
@@ -199,10 +213,11 @@ class LaunchFlow:
         match because the name-stem differs.
         """
         host = self.host
+        ctx = context if context is not None else host.cfg
         # The probe shells out to tmux (``tmux list-sessions``) — the call
         # that used to freeze "new project" on the event loop. Run it in a
         # worker; the on-loop continuation prompts or commits.
-        _probe = host.cfg.on_probe_existing_sessions
+        _probe = ctx.on_probe_existing_sessions
         probe_fn = probe if probe is not None else (lambda: _probe(target_dir, profile_id, mode_id))
 
         def on_probed(existing) -> None:
@@ -210,17 +225,13 @@ class LaunchFlow:
                 on_new()
                 return
 
-            launch_user = host.cfg.launch_user or host.cfg.current_user
+            launch_user = ctx.launch_user or ctx.current_user
 
             def after_choice(result):
                 if result is None:
                     return
                 action, name, user = result
                 if action == "attach" and name:
-                    # Route through the Screen's thin delegator so a test that
-                    # overrides ``_attach_session`` on a stub host still sees
-                    # the call (and audit/LaunchRequest construction stays in
-                    # one place).
                     expected = next(
                         (
                             row[3]
@@ -229,10 +240,7 @@ class LaunchFlow:
                         ),
                         None,
                     )
-                    if expected is not None:
-                        host._attach_session(user or launch_user, name, expected)
-                    else:
-                        host._attach_session(user or launch_user, name)
+                    self.attach_session(user or launch_user, name, expected, context=ctx)
                 elif action == "new":
                     on_new()
 
@@ -258,36 +266,27 @@ class LaunchFlow:
         target_dir: str,
         target_label: str,
         commit_primary,
+        context: TuiContext | None = None,
     ) -> None:
-        """Worktree-aware launch into an existing folder (cwd or named project).
-
-        Shared by ``_launch_cwd`` and ``_launch_existing``. Profile-specific
-        launchability and workspace discovery happen after the operator picks a
-        profile. Before that choice this screen uses
-        the plain profile/mode picker so pinned launch-user profiles cannot be
-        denied by probes run under the startup user.
-
-        ``commit_primary(profile_id, mode_id, target_dir=None)`` is the
-        folder-specific launch (``on_launch_cwd`` vs ``on_launch_existing``)
-        used for the primary tree and the non-git case. ``target_dir`` is the
-        resolved primary ``repo_root`` the WORKSPACE primary row carries — the
-        cwd flow anchors its launch there (so the primary row lands in the
-        primary tree even when the TUI was started in a linked worktree or a
-        subdirectory of the repo); the non-git / 2-tuple path passes ``None``
-        to launch the folder as-is.
-        Workspace discovery runs off-loop under the resolved target user.
-        """
+        """Offer ready Git choices; discovery never delays current-folder launch."""
         host = self.host
         self._generation += 1
         generation = self._generation
         repo_root = target_dir
+        discovery_ctx = context if context is not None else host.app.ctx  # type: ignore[attr-defined]
+        cache = host.app.worktree_discovery  # type: ignore[attr-defined]
+        cache.prefetch(discovery_ctx, target_dir)
+
+        def git_status(profile_id: str) -> str:
+            profile = discovery_ctx.launch_profiles.get(profile_id)
+            return cache.status(discovery_ctx, target_dir, profile.launch_user) if profile else ""
 
         def commit_existing_worktree(
             profile_id: str, mode_id: str, repo_root: str, path: str, branch: str
         ) -> None:
             # Launches into an existing worktree — the planner shells out to
             # tmux (`collect_sessions`), so it runs off the loop.
-            fn = host.cfg.on_launch_existing_worktree
+            fn = discovery_ctx.on_launch_existing_worktree
 
             def do_commit() -> None:
                 host.app.run_off_loop(  # type: ignore[attr-defined]
@@ -299,12 +298,14 @@ class LaunchFlow:
 
             # The worktree dir already exists, so its workload resolves up
             # front — prompt affordance applies (unlike new-worktree create).
-            self.commit_with_runtime_gate(path, profile_id, mode_id, do_commit)
+            self.commit_with_runtime_gate(
+                path, profile_id, mode_id, do_commit, context=discovery_ctx
+            )
 
         def commit_new_worktree(profile_id: str, mode_id: str, repo_root: str, branch: str) -> None:
             # Creates a git worktree (`git worktree add`, possibly `git fetch`)
             # then launches — heavy subprocess work, strictly off the loop.
-            fn = host.cfg.on_create_worktree
+            fn = discovery_ctx.on_create_worktree
             host.app.run_off_loop(  # type: ignore[attr-defined]
                 lambda: fn(repo_root, branch, profile_id, mode_id),
                 on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
@@ -316,23 +317,15 @@ class LaunchFlow:
             if generation != self._generation:
                 return
             kind = choice[0]
-            if kind == "primary":
-                # Primary tree keeps the plain path-based planner + probe,
-                # anchored on the resolved primary ``repo_root`` the
-                # choice carries rather than on ``target_dir``. They coincide
-                # when the TUI was started at the primary repo root, and differ
-                # when it was started anywhere else (a linked worktree or a
-                # subdirectory): the primary row then launches into — and
-                # probes for existing sessions in — the primary tree, matching
-                # the row's ``(primary)`` label, not wherever the TUI was
-                # opened.
-                _, primary_root = choice
+            if kind in {"current", "primary"}:
+                _, chosen_path = choice
                 self.maybe_show_session_choice(
-                    target_dir=primary_root,
+                    target_dir=chosen_path,
                     target_label=target_label,
                     profile_id=profile_id,
                     mode_id=mode_id,
-                    on_new=lambda: commit_primary(profile_id, mode_id, primary_root),
+                    on_new=lambda: commit_primary(profile_id, mode_id, chosen_path),
+                    context=discovery_ctx,
                 )
                 return
             if kind == "worktree":
@@ -347,9 +340,10 @@ class LaunchFlow:
                     on_new=lambda: commit_existing_worktree(
                         profile_id, mode_id, repo_root, path, branch
                     ),
-                    probe=lambda: host.cfg.on_probe_existing_worktree_sessions(
+                    probe=lambda: discovery_ctx.on_probe_existing_worktree_sessions(
                         path, repo_root, branch, profile_id, mode_id
                     ),
+                    context=discovery_ctx,
                 )
                 return
             # ("new", None) → prompt for a branch name, then create + launch.
@@ -362,52 +356,56 @@ class LaunchFlow:
             host.app.push_screen(WorktreeBranchScreen(), after_branch)
 
         def after_opts(result) -> None:
+            nonlocal repo_root
             if result is None or generation != self._generation:
+                cache.prefetch(discovery_ctx, None)
                 return
             profile_id, mode_id = result
-
-            def after_probe(workspaces) -> None:
-                nonlocal repo_root
-                if generation != self._generation or getattr(host.app, "screen", host) is not host:
-                    return
-                if not workspaces:
-                    self.maybe_show_session_choice(
-                        target_dir=target_dir,
-                        target_label=target_label,
-                        profile_id=profile_id,
-                        mode_id=mode_id,
-                        on_new=lambda: commit_primary(profile_id, mode_id),
-                    )
-                    return
-                repo_root = next((w.path for w in workspaces if w.is_primary), target_dir)
+            profile = discovery_ctx.launch_profiles.get(profile_id)
+            outcome = (
+                cache.peek(discovery_ctx, target_dir, profile.launch_user) if profile else None
+            )
+            cache.prefetch(discovery_ctx, None)
+            discovery = outcome.discovery if outcome is not None else None
+            if discovery is not None:
+                repo_root = discovery.source_anchor
                 host.app.push_screen(
-                    WorkspaceScreen(workspaces, repo_root=repo_root),
+                    WorkspaceScreen(
+                        list(discovery.workspaces),
+                        repo_root=repo_root,
+                        current_path=discovery.target_path,
+                    ),
                     lambda choice: (
                         dispatch_workspace(profile_id, mode_id, choice)
                         if choice is not None
                         else None
                     ),
                 )
-
-            probe = host.cfg.on_probe_worktrees
-            host.app.run_off_loop(  # type: ignore[attr-defined]
-                lambda: probe(target_dir, profile_id, mode_id),
-                on_success=after_probe,
-                on_error=lambda exc: host.app.notify(
-                    f"Workspace probe failed: {exc}", severity="error", timeout=6
-                ),
-                label="worktree_probe",
+                return
+            # Advisory discovery never gates Enter. No continuation is attached
+            # to an unfinished read, so its eventual result cannot open a modal.
+            self.maybe_show_session_choice(
+                target_dir=target_dir,
+                target_label=target_label,
+                profile_id=profile_id,
+                mode_id=mode_id,
+                on_new=lambda: commit_primary(profile_id, mode_id),
+                context=discovery_ctx,
             )
 
-        host.app.push_screen(LaunchOptionsScreen(host.cfg, host.state), after_opts)
+        host.app.push_screen(
+            LaunchOptionsScreen(discovery_ctx, host.state, git_status=git_status), after_opts
+        )
 
     def launch_cwd(self) -> None:
         host = self.host
+        ctx = host.app.ctx  # type: ignore[attr-defined]
+        host.app.worktree_discovery.begin()  # type: ignore[attr-defined]
 
         def commit_primary(profile_id: str, mode_id: str, target_dir: str | None = None) -> None:
             # The planner probes tmux (`collect_sessions`) before building the
             # request — off the loop so the launch never freezes the UI.
-            fn = host.cfg.on_launch_cwd
+            fn = ctx.on_launch_cwd
 
             def do_commit() -> None:
                 host.app.run_off_loop(  # type: ignore[attr-defined]
@@ -420,17 +418,19 @@ class LaunchFlow:
             # Runtime readiness (probe → prompt/auto start/create) precedes
             # the launch; ``None`` target resolves to the started-in folder.
             self.commit_with_runtime_gate(
-                target_dir or host.cfg.cwd, profile_id, mode_id, do_commit
+                target_dir or ctx.cwd, profile_id, mode_id, do_commit, context=ctx
             )
 
         self.begin_launch_in_folder(
-            target_dir=host.cfg.cwd,
-            target_label=host.cfg.cwd_short or host.cfg.cwd,
+            target_dir=ctx.cwd,
+            target_label=ctx.cwd_short or ctx.cwd,
             commit_primary=commit_primary,
+            context=ctx,
         )
 
     def launch_new(self) -> None:
         host = self.host
+        ctx = host.app.ctx  # type: ignore[attr-defined]
         self._generation += 1
         generation = self._generation
 
@@ -443,7 +443,7 @@ class LaunchFlow:
                 def commit_new(git_profile: str) -> None:
                     # Creates the project dir (`mkdir -p`), optionally a git
                     # remote, and probes tmux — all subprocess, off the loop.
-                    fn = host.cfg.on_launch_new
+                    fn = ctx.on_launch_new
                     host.app.run_off_loop(  # type: ignore[attr-defined]
                         lambda: fn(name, profile_id, mode_id, git_profile),
                         on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
@@ -453,11 +453,12 @@ class LaunchFlow:
 
                 def choose_session(git_profile: str) -> None:
                     self.maybe_show_session_choice(
-                        target_dir=os.path.join(host.cfg.new_project_root, name),
+                        target_dir=os.path.join(ctx.new_project_root, name),
                         target_label=name,
                         profile_id=profile_id,
                         mode_id=mode_id,
                         on_new=lambda: commit_new(git_profile),
+                        context=ctx,
                     )
 
                 def on_git_choice(git_profile: str | None) -> None:
@@ -475,9 +476,9 @@ class LaunchFlow:
                         on_git_choice,
                     )
 
-                if host.cfg.git_create_enabled:
+                if ctx.git_create_enabled:
                     host.app.run_off_loop(  # type: ignore[attr-defined]
-                        lambda: host.cfg.on_git_remote_options(name, profile_id, mode_id),
+                        lambda: ctx.on_git_remote_options(name, profile_id, mode_id),
                         on_success=on_options,
                         on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
                         label="git_remote_options",
@@ -490,14 +491,26 @@ class LaunchFlow:
         def after_name(name: str | None) -> None:
             if not name:
                 return
-            host.app.push_screen(LaunchOptionsScreen(host.cfg, host.state), after_opts(name))
+            host.app.push_screen(LaunchOptionsScreen(ctx, host.state), after_opts(name))
 
-        host.app.push_screen(NewProjectScreen(host.cfg.new_project_root), after_name)
+        host.app.push_screen(NewProjectScreen(ctx.new_project_root), after_name)
 
     def launch_existing(self) -> None:
         host = self.host
         self._generation += 1
         projects_ctx = host.app.ctx  # type: ignore[attr-defined]
+        cache = host.app.worktree_discovery  # type: ignore[attr-defined]
+        cache.begin()
+        highlighted: str | None = None
+
+        def on_highlight(path: str | None) -> None:
+            nonlocal highlighted
+            highlighted = os.path.join(projects_ctx.new_project_root, path) if path else None
+            cache.prefetch(projects_ctx, highlighted)
+
+        def git_status() -> str:
+            return cache.status(projects_ctx, highlighted) if highlighted else ""
+
         if (
             not projects_ctx.projects_loading
             and not projects_ctx.projects_error
@@ -525,10 +538,15 @@ class LaunchFlow:
                 # repository. The planner revalidates its relative project path
                 # under the selected profile before building the request.
                 fn = projects_ctx.on_launch_existing
+                chosen_path = target_dir or project_dir
 
                 def do_commit() -> None:
                     host.app.run_off_loop(  # type: ignore[attr-defined]
-                        lambda: fn(name, profile_id, mode_id),
+                        lambda: (
+                            fn(name, profile_id, mode_id)
+                            if chosen_path == project_dir
+                            else fn(name, profile_id, mode_id, chosen_path)
+                        ),
                         on_success=lambda req: host.app.request_launch(req),  # type: ignore[attr-defined]
                         on_error=lambda exc: host.app.notify(str(exc), severity="error", timeout=6),
                         label="launch_existing",
@@ -536,7 +554,9 @@ class LaunchFlow:
 
                 # The named project already exists on disk → runtime resolves
                 # up front → prompt affordance applies.
-                self.commit_with_runtime_gate(project_dir, profile_id, mode_id, do_commit)
+                self.commit_with_runtime_gate(
+                    chosen_path, profile_id, mode_id, do_commit, context=projects_ctx
+                )
 
             # Same worktree-aware flow as launch-cwd: a git project shows the
             # WORKSPACE column, a non-git one degrades to agent/mode only.
@@ -544,6 +564,7 @@ class LaunchFlow:
                 target_dir=project_dir,
                 target_label=name,
                 commit_primary=commit_primary,
+                context=projects_ctx,
             )
 
         host.app.push_screen(
@@ -553,6 +574,8 @@ class LaunchFlow:
                 list_directories=projects_ctx.on_list_project_directories,
                 loading=projects_ctx.projects_loading,
                 error=projects_ctx.projects_error,
+                on_highlight=on_highlight,
+                git_status=git_status,
             ),
             after_name,
         )

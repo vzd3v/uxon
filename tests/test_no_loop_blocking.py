@@ -173,7 +173,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             try:
                 if not release.wait(10):
                     raise TimeoutError("workspace probe release missing")
-                return []
+                return None
             finally:
                 completed.set()
 
@@ -188,7 +188,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             default_profile="claude",
             launch_profiles=make_launch_profile_options(),
             agent_availability={"claude": AgentAvailability("ok")},
-            on_probe_worktrees=workspaces,
+            on_discover_worktrees=workspaces,
             on_probe_existing_sessions=lambda *args: record("sessions", *args, result=()),
             on_runtime_gate=lambda *args: record("runtime", *args),
             on_launch_cwd=commit,
@@ -216,8 +216,12 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("1", search.render_line(0).text)
                 self.assertTrue(app.screen.query_one("#search-bar").has_class("-shown"))
                 self.assertFalse(completed.is_set(), "search input must be handled before release")
-                self.assertEqual([label for label, _, _, _ in calls], ["workspaces"])
-                self.assertEqual(launches, [])
+                await app.workers.wait_for_complete()
+                self.assertEqual(
+                    [label for label, _, _, _ in calls],
+                    ["workspaces", "sessions", "runtime", "commit"],
+                )
+                self.assertEqual(len(launches), 1, "pending Git must not delay Enter")
             finally:
                 release.set()
             self.assertTrue(await asyncio.to_thread(completed.wait, 10))
@@ -230,7 +234,7 @@ class InteractiveActionsRunOffLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 [label for label, _, _, _ in calls], ["workspaces", "sessions", "runtime", "commit"]
             )
-            self.assertEqual(calls[0][1], ("/srv/work", "claude", "normal"))
+            self.assertEqual(calls[0][1], ("/srv/work", "alice"))
             self.assertTrue(
                 all(thread != loop_thread and not on_loop for _, _, thread, on_loop in calls)
             )

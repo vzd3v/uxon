@@ -45,7 +45,7 @@ def _mk_ctx(**overrides):
         on_launch_new=lambda n, profile_id, mode_id, g: LaunchRequest(
             cmd=("/bin/true",), label="new"
         ),
-        on_launch_existing=lambda n, profile_id, mode_id: LaunchRequest(
+        on_launch_existing=lambda n, profile_id, mode_id, target_dir=None: LaunchRequest(
             cmd=("/bin/true",), label="existing"
         ),
     )
@@ -510,7 +510,7 @@ class WorkspaceScreenTests(unittest.IsolatedAsyncioTestCase):
                 "primary",
                 lambda: WorkspaceScreen(rows, repo_root="/srv/work"),
                 press_keys("up", "down", "enter"),
-                ("primary", "/srv/work"),
+                ("current", "/srv/work"),
             ),
             ScreenScenario(
                 "existing",
@@ -538,7 +538,7 @@ class WorkspaceScreenTests(unittest.IsolatedAsyncioTestCase):
 class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
     def _ctx(self, **overrides):
         from uxon.infra.agents import AgentAvailability
-        from uxon.infra.worktrees import Workspace
+        from uxon.infra.worktrees import GitDiscovery, Workspace
 
         self.workspaces = [
             Workspace(label="main", branch="main", path="/srv/work", is_primary=True),
@@ -553,7 +553,9 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             enabled_profiles=("claude",),
             default_profile="claude",
             agent_availability={"claude": AgentAvailability(status="ok")},
-            on_probe_worktrees=lambda cwd, profile, mode: self.workspaces,
+            on_discover_worktrees=lambda cwd, user: GitDiscovery(
+                cwd, "/srv/work", "/srv/work", "/srv/work", "/srv/work/.git", tuple(self.workspaces)
+            ),
             on_probe_existing_worktree_sessions=lambda *a: (),
             on_probe_existing_sessions=lambda *a: (),
         )
@@ -571,11 +573,20 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
 
         probes, launches = [], []
 
-        def probe(target, profile, mode):
+        def probe(target, user):
+            from uxon.infra.worktrees import GitDiscovery
+
             with self.assertRaises(RuntimeError):
                 asyncio.get_running_loop()
-            probes.append((target, profile, mode))
-            return self.workspaces
+            probes.append((target, user))
+            return GitDiscovery(
+                target,
+                "/srv/work",
+                "/srv/work",
+                "/srv/work",
+                "/srv/work/.git",
+                tuple(self.workspaces),
+            )
 
         def launch(*args):
             launches.append(args)
@@ -586,7 +597,7 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             launch_profiles={
                 "claude": LaunchProfileOption("claude", "Claude", "claude", "alice_agent")
             },
-            on_probe_worktrees=probe,
+            on_discover_worktrees=probe,
             on_launch_existing_worktree=launch,
         )
         app = UxonApp(ctx, probe_agents=False)
@@ -596,12 +607,12 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             self.assertIsInstance(app.screen, LaunchOptionsScreen)
-            self.assertEqual(probes, [])
+            self.assertEqual(probes, [("/srv/work", "alice_agent")])
             await pilot.press("down", "enter")  # Claude auto
             await pilot.pause()
             await pilot.pause()
             self.assertIsInstance(app.screen, WorkspaceScreen)
-            self.assertEqual(probes, [("/srv/work", "claude", "auto")])
+            self.assertEqual(probes, [("/srv/work", "alice_agent")])
             await pilot.press("down", "enter")
             await pilot.pause()
             await pilot.pause()
@@ -640,34 +651,39 @@ class LaunchCwdWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
         self.assertEqual(created, [("/srv/work", "feature/new", "claude", "normal")])
 
-    async def test_workspace_probe_error_aborts_launch_with_diagnostic(self) -> None:
-        # Failed worker completion must not continue to a launch.
+    async def test_workspace_probe_error_is_inline_and_enter_launches_current(self) -> None:
+        from harness.textual_ready import wait_until
+        from textual.widgets import Static
+
         from uxon.tui.app import UxonApp
-        from uxon.tui.screens.main import MainScreen
 
         def broken(*args):
             raise RuntimeError("corrupt HEAD")
 
-        app = UxonApp(self._ctx(on_probe_worktrees=broken), probe_agents=False)
-        notices = []
+        app = UxonApp(self._ctx(on_discover_worktrees=broken), probe_agents=False)
+        launched = []
+        app.request_launch = launched.append
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.notify = lambda message, **kwargs: notices.append((message, kwargs))
             app.screen.query_one("#action-cwd").focus()
-            await pilot.press("enter", "enter")
-            await pilot.pause()
-            await pilot.pause()
-            self.assertIsInstance(app.screen, MainScreen)
-            self.assertIsNone(app.pending_launch)
-        self.assertTrue(any("corrupt HEAD" in str(n[0]) for n in notices), notices)
+            await pilot.press("enter")
+            await wait_until(
+                pilot,
+                lambda: "corrupt HEAD" in str(app.screen.query_one("#git-status", Static).content),
+                "inline Git error",
+            )
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: bool(launched), "current launch despite Git error")
+            self.assertEqual(launched[0].label, "cwd")
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
 class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
-    async def test_existing_project_discovers_workspaces_after_profile_choice(self) -> None:
-        # Project selection and asynchronous workspace continuation share state.
+    async def test_existing_project_prefetch_is_reused_by_profile_choice(self) -> None:
+        from harness.textual_ready import wait_until
+
         from uxon.infra.agents import AgentAvailability
-        from uxon.infra.worktrees import Workspace
+        from uxon.infra.worktrees import GitDiscovery, Workspace
         from uxon.tui.app import UxonApp
         from uxon.tui.screens.launch_options import LaunchOptionsScreen
         from uxon.tui.screens.workspace import WorkspaceScreen
@@ -679,22 +695,31 @@ class LaunchExistingWorktreeWiringTests(unittest.IsolatedAsyncioTestCase):
             default_profile="claude",
             agent_availability={"claude": AgentAvailability(status="ok")},
             existing_projects=[("proj", "2026-05-01")],
-            on_probe_worktrees=lambda *a: probes.append(a) or rows,
+            on_discover_worktrees=lambda path, user: (
+                probes.append((path, user))
+                or GitDiscovery(path, path, path, path, path + "/.git", tuple(rows))
+            ),
         )
         app = UxonApp(ctx, probe_agents=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._launch_existing()
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: (
+                    app.worktree_discovery.peek(ctx, "/srv/work/proj", "alice").status == "ready"
+                ),
+                "highlighted project Git",
+            )
             await pilot.press("enter")
             await pilot.pause()
             self.assertIsInstance(app.screen, LaunchOptionsScreen)
-            self.assertEqual(probes, [])
+            self.assertEqual(probes, [("/srv/work/proj", "alice")])
             await pilot.press("enter")
             await pilot.pause()
             await pilot.pause()
             self.assertIsInstance(app.screen, WorkspaceScreen)
-            self.assertEqual(probes, [("/srv/work/proj", "claude", "normal")])
+            self.assertEqual(probes, [("/srv/work/proj", "alice")])
 
 
 @unittest.skipUnless(_textual_available(), "textual not installed")
@@ -779,8 +804,8 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             calls.append((path, threading.get_ident()))
             return tree[path]
 
-        def launch(path, profile, mode):
-            launches.append((path, profile, mode))
+        def launch(path, profile, mode, target_dir=None):
+            launches.append((path, profile, mode, target_dir))
             return LaunchRequest(cmd=("true",), label=path)
 
         ctx = _mk_ctx(
@@ -789,7 +814,7 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             default_profile="claude",
             agent_availability={"claude": AgentAvailability(status="ok")},
             on_list_project_directories=list_directories,
-            on_probe_worktrees=lambda *args: probes.append(args) or [],
+            on_discover_worktrees=lambda *args: probes.append(args) and None,
             on_launch_existing=launch,
             refresh_sources=[],
         )
@@ -816,7 +841,6 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             await send_key(pilot, "enter")
             self.assertIs(app.screen, screen)
             self.assertEqual(launches, [])
-            self.assertEqual(probes, [])
             await send_key(pilot, "escape")
             self.assertEqual(fi.value, "")
             await send_key(pilot, "escape")
@@ -909,14 +933,15 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("[leaf]", str(label.content))
             await send_key(pilot, "enter")
             self.assertIsInstance(app.screen, LaunchOptionsScreen)
-            self.assertEqual(probes, [])
+            selected = "/srv/work/beta_group/project space/[leaf]"
+            await wait_until(pilot, lambda: (selected, "alice") in probes, "selected path prefetch")
             # The launch exits this App; a live-screen paint ACK is inapplicable.
             await pilot.press("enter")
             await asyncio.wait_for(app.workers.wait_for_complete(), 5)
+            self.assertEqual(probes.count((selected, "alice")), 1)
             self.assertEqual(
-                probes, [("/srv/work/beta_group/project space/[leaf]", "claude", "normal")]
+                launches, [("beta_group/project space/[leaf]", "claude", "normal", None)]
             )
-            self.assertEqual(launches, [("beta_group/project space/[leaf]", "claude", "normal")])
             self.assertEqual(
                 [path for path, _ in calls], ["beta_group", "beta_group/project space"] * 2
             )

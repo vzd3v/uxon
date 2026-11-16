@@ -1,11 +1,12 @@
 """Pick a launch profile and an explicit permission mode.
 
-Returns ``(profile_id, mode_id)`` or ``None`` on cancel. Workspace discovery
-follows this choice so its filesystem probes use the selected profile's user.
+Returns ``(profile_id, mode_id)`` or ``None`` on cancel. Advisory Git status
+follows the highlighted profile's execution user without delaying selection.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -38,11 +39,13 @@ class _PermissionModeItem(ListItem):
 class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
     DEFAULT_CSS = """
     LaunchOptionsScreen { align: center middle; }
-    LaunchOptionsScreen > Horizontal {
+    LaunchOptionsScreen > Vertical {
         width: 80; height: auto; padding: 1 2;
         border: round $accent; background: $surface;
     }
     LaunchOptionsScreen Vertical { width: 1fr; }
+    LaunchOptionsScreen Horizontal { height: auto; }
+    LaunchOptionsScreen #git-status { height: auto; margin-top: 1; }
     LaunchOptionsScreen .panel-title { text-style: bold; margin-bottom: 1; }
     LaunchOptionsScreen ListView { height: auto; min-height: 3; }
     """
@@ -58,6 +61,8 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         self,
         cfg,
         state=None,
+        *,
+        git_status: Callable[[str], str] = lambda profile: "",
     ) -> None:
         super().__init__()
         # ``cfg`` is the static rebuild snapshot (carries launch profiles +
@@ -69,6 +74,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         # construct a TuiState.
         self.cfg = cfg
         self._state = state
+        self._git_status = git_status
         # Compute the initial visible set from current availability.
         # ``_rebuild_agent_list`` re-reads on every probe-result
         # dispatch so the modal reflects fresh data without a re-open.
@@ -124,32 +130,41 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
         return tuple(self.cfg.agents)
 
     def compose(self) -> ComposeResult:
-        with Horizontal():
-            with Vertical(id="agent-panel"):
-                yield Static("Profile", classes="panel-title")
-                items = []
-                avail = self._availability_now()
-                profiles = self._launch_profiles()
-                show_launch_user = launch_profile_users_differ(self._visible_agents, profiles)
-                for idx, aid in enumerate(self._visible_agents, start=1):
-                    items.append(
-                        ListItem(
-                            Static(
-                                launch_profile_list_label(
-                                    idx,
-                                    aid,
-                                    profiles.get(aid),
-                                    avail.get(aid),
-                                    show_launch_user=show_launch_user,
-                                )
-                            ),
-                            id=f"agent-{aid}",
+        with Vertical():
+            with Horizontal():
+                with Vertical(id="agent-panel"):
+                    yield Static("Profile", classes="panel-title")
+                    items = []
+                    avail = self._availability_now()
+                    profiles = self._launch_profiles()
+                    show_launch_user = launch_profile_users_differ(self._visible_agents, profiles)
+                    for idx, aid in enumerate(self._visible_agents, start=1):
+                        items.append(
+                            ListItem(
+                                Static(
+                                    launch_profile_list_label(
+                                        idx,
+                                        aid,
+                                        profiles.get(aid),
+                                        avail.get(aid),
+                                        show_launch_user=show_launch_user,
+                                    )
+                                ),
+                                id=f"agent-{aid}",
+                            )
                         )
-                    )
-                yield CyclicListView(*items, id="agent-list")
-            with Vertical(id="mode-panel"):
-                yield Static("Permission mode", classes="panel-title")
-                yield CyclicListView(id="mode-list")
+                    yield CyclicListView(*items, id="agent-list")
+                with Vertical(id="mode-panel"):
+                    yield Static("Permission mode", classes="panel-title")
+                    yield CyclicListView(id="mode-list")
+            yield Static("", id="git-status", markup=False)
+
+    def update_git_status(self) -> None:
+        if self.is_mounted:
+            status = self.query_one("#git-status", Static)
+            text = self._git_status(self._current_agent)
+            status.display = bool(text)
+            status.update(text)
 
     async def on_mount(self) -> None:
         if not self._visible_agents:
@@ -176,6 +191,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                 agent_list.index = 0
         await self._rebuild_mode_list(self._current_agent)
         self._reflect_focus()
+        self.call_after_refresh(self.update_git_status)
 
     async def _rebuild_mode_list(self, profile_id: str) -> None:
         mode_list = self.query_one("#mode-list", ListView)
@@ -221,6 +237,7 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             return
         self._current_agent = new_agent
         await self._rebuild_mode_list(new_agent)
+        self.update_git_status()
 
     def action_commit(self) -> None:
         selected = self.query_one("#mode-list", ListView).highlighted_child
@@ -327,3 +344,4 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
             except ValueError:
                 agent_list.index = 0
         self._reflect_focus()
+        self.update_git_status()

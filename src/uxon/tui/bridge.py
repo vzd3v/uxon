@@ -42,7 +42,6 @@ from uxon.infra import (
     sessions_probe,
     tmux,
 )
-from uxon.infra.run import run_query
 
 if TYPE_CHECKING:
     from uxon.domain.launch_request import LaunchRequest
@@ -321,9 +320,17 @@ class TuiBridge:
         )
         return req
 
-    def on_launch_existing(self, name: str, profile_id: str, mode_id: str):
+    def on_launch_existing(
+        self, name: str, profile_id: str, mode_id: str, target_dir: str | None = None
+    ):
         req = tui_planning._plan_tui_open_existing_profile(
-            self.cfg, self.caller_user, self.launch_user, name, profile_id, mode_id
+            self.cfg,
+            self.caller_user,
+            self.launch_user,
+            name,
+            profile_id,
+            mode_id,
+            target_dir=target_dir,
         )
         return req
 
@@ -394,8 +401,6 @@ class TuiBridge:
         A non-git directory returns an empty list. Failed enumeration raises;
         it must not be treated as a non-git directory. Runs off the event loop.
         """
-        from uxon.infra.worktrees import WorktreeProbeError, parse_worktree_porcelain
-
         resolved = launch_profile_app.resolve_launch_profile(
             self.cfg,
             self.caller_user,
@@ -407,20 +412,12 @@ class TuiBridge:
         user = resolved.launch_user
         cwd_arg = resolved.canonical_target
         launch_app.ensure_launch_target_allowed(self.cfg, user, cwd_arg)
-        repo_root = git.git_repo_root_nonint_as_user(self.cfg, cwd_arg, user)
-        if not repo_root:
-            return []
-        primary = git.git_common_dir_root_as_user(self.cfg, cwd_arg, user)
-        if primary:
-            repo_root = primary
-        cp = run_query(
-            identity.nonint_command_prefix_for_user(self.cfg, user)
-            + ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
-            timeout=self.cfg.execution.backend_for_user(user).probe_timeout_seconds,
-        )
-        if cp.returncode != 0:
-            raise WorktreeProbeError((cp.stderr or "").strip() or "git worktree list failed")
-        return parse_worktree_porcelain(cp.stdout or "", repo_root=repo_root)
+        discovery = self.on_discover_worktrees(cwd_arg, user)
+        return [] if discovery is None else list(discovery.workspaces)
+
+    def on_discover_worktrees(self, target_path: str, launch_user: str):
+        """Read Git state for prefetch; this does not authorize a launch profile."""
+        return git.discover_workspaces(self.cfg, target_path, launch_user)
 
     def on_create_worktree(self, repo_root: str, branch: str, profile_id: str, mode_id: str):
         # plan_worktree_launch emits its own worktree.create + session.new
@@ -499,6 +496,9 @@ class TuiBridge:
             target_dir,
             mode_id,
             target_may_not_exist=False,
+        )
+        launch_app.ensure_launch_target_allowed(
+            self.cfg, resolved.launch_user, resolved.canonical_target
         )
         return launch_app.decide_runtime_gate(self.cfg, resolved.canonical_target, resolved)
 

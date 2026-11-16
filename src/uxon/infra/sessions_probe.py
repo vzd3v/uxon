@@ -29,6 +29,7 @@ from uxon.domain.session import (
     compatible_indexed_sessions,
     parse_session_name,
     session_stem_for_path,
+    slugify,
 )
 from uxon.errors import fail
 from uxon.infra import demo, tmux
@@ -827,4 +828,31 @@ def probe_tui_compatible_sessions(
         prefix=cfg.session_prefix,
         legacy_prefixes=cfg.legacy_session_prefixes,
     )
+    if stem is None:
+        # Current checkout can also contain a session originally launched
+        # through the repo-qualified worktree flow. Keep the ordinary name
+        # conflict checks above; supplement only with protected exact-path
+        # matches from this execution context, never a guessed name family.
+        backend = cfg.execution.backend_for_user(launch_user)
+        project_slug = slugify(os.path.basename(target_lexical))
+        seen = {session.identity.key for session in matches}
+        for session in sessions:
+            if (
+                not session.launch_record_verified
+                or session.exited
+                or session.active_pane_dead
+                or session.user != launch_user
+                or session.launch_user != launch_user
+                or session.execution_backend != backend.id
+                or session.execution_fingerprint != backend.fingerprint
+                or session.profile != profile_id
+                or session.project_slug != project_slug
+                or not session.active_path
+                or os.path.normpath(session.active_path) != target_lexical
+            ):
+                continue
+            identity_key = session.identity.key
+            if identity_key not in seen:
+                matches.append(session)
+                seen.add(identity_key)
     return tuple(matches)

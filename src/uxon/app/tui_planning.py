@@ -248,6 +248,8 @@ def _plan_tui_open_existing_profile(
     name: str,
     profile_id: str,
     mode_id: str,
+    *,
+    target_dir: str | None = None,
 ):
     """Build a LaunchRequest for the TUI "Open existing project" flow.
 
@@ -260,6 +262,10 @@ def _plan_tui_open_existing_profile(
         project_dir = project_directory(cfg.new_project_root, name)
     except ValueError as exc:
         fail(str(exc))
+    if target_dir is not None and target_dir != project_dir:
+        # Validate the original picker-relative path above, then authorize the
+        # explicitly chosen workspace through the same absolute-target planner.
+        return _plan_tui_run_profile(cfg, caller_user, launch_user, target_dir, profile_id, mode_id)
     args = ParsedArgs(
         action="new",
         target_id=name,

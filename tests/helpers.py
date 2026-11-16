@@ -117,7 +117,9 @@ def make_dashboard_context(**overrides):
         tui_render_debounce_ms=0,
         on_launch_cwd=lambda p, m, target_dir=None: LaunchRequest(("true",), label="cwd"),
         on_launch_new=lambda n, p, m, g: LaunchRequest(("true",), label="new"),
-        on_launch_existing=lambda n, p, m: LaunchRequest(("true",), label="existing"),
+        on_launch_existing=lambda n, p, m, target_dir=None: LaunchRequest(
+            ("true",), label="existing"
+        ),
     )
     base.update(overrides)
     return TuiContext(**base)

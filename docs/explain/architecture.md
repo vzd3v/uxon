@@ -130,6 +130,11 @@ Reentry paints the last published snapshot while refreshing; it does not wait
 for a synchronous context rebuild. Result keys include user, root and execution
 backend fingerprint so stale successes and failures cannot update a new target.
 
+The App owns a separate bounded `WorktreeDiscovery` cache for highlighted launch
+targets, keyed by path, effective user and backend fingerprint. Git reads are
+advisory: confirmation consumes ready facts or continues immediately; a worker
+never opens a delayed modal or authorizes a launch.
+
 `tui/agent_discovery.py` discovers command presence once per interactive
 process; neither the TUI nor launch preparation executes agent version commands.
 Doctor retains its explicit executable diagnostics. `RenderScheduler` combines

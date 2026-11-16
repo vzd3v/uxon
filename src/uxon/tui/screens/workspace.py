@@ -1,4 +1,4 @@
-"""Choose a workspace after resolving the launch profile's filesystem access."""
+"""Choose a discovered workspace; launch authorization remains in the planner."""
 
 from __future__ import annotations
 
@@ -25,21 +25,31 @@ class WorkspaceScreen(CardModal["tuple | None"]):
     )
     AUTO_FOCUS = "#workspace-list"
 
-    def __init__(self, workspaces: list[Workspace], *, repo_root: str) -> None:
+    def __init__(
+        self, workspaces: list[Workspace], *, repo_root: str, current_path: str | None = None
+    ) -> None:
         super().__init__()
-        self._workspaces = tuple(workspaces)
-        self._repo_root = repo_root
+        self._current_path = current_path or repo_root
+        self._workspaces = tuple(w for w in workspaces if w.path != self._current_path)
 
     def compose(self) -> ComposeResult:
         with self.card():
             yield Static("Workspace", classes="title")
             items = [
                 ListItem(
-                    Static(f"{w.label}  (primary)" if w.is_primary else w.label),
+                    Static(f"Current checkout  {self._current_path}", markup=False),
+                    id="workspace-current",
+                )
+            ]
+            items.extend(
+                ListItem(
+                    Static(
+                        f"{w.label}{' (primary)' if w.is_primary else ''}  {w.path}", markup=False
+                    ),
                     id=f"workspace-{index}",
                 )
                 for index, w in enumerate(self._workspaces)
-            ]
+            )
             items.append(ListItem(Static("+ New worktree…"), id="workspace-new"))
             yield CyclicListView(*items, id="workspace-list")
 
@@ -50,9 +60,12 @@ class WorkspaceScreen(CardModal["tuple | None"]):
         if selected.id == "workspace-new":
             self.dismiss(("new", None))
             return
+        if selected.id == "workspace-current":
+            self.dismiss(("current", self._current_path))
+            return
         workspace = self._workspaces[int(selected.id.removeprefix("workspace-"))]
         choice = (
-            ("primary", self._repo_root)
+            ("primary", workspace.path)
             if workspace.is_primary
             else ("worktree", workspace.path, workspace.branch)
         )

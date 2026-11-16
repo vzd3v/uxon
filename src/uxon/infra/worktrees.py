@@ -3,7 +3,7 @@
 This module imports no UI framework and no ``subprocess`` machinery — it
 holds the deterministic computations (path layout, slug, porcelain
 parsing) so they are unit-testable without spinning up a git repo or the
-TUI. The side-effecting git calls live in ``uxon.cli`` and pass their
+TUI. The side-effecting git calls live in ``uxon.infra.git_probe`` and pass their
 captured stdout into :func:`parse_worktree_porcelain`.
 """
 
@@ -16,13 +16,10 @@ from uxon.domain.session import slugify
 
 
 class WorktreeProbeError(Exception):
-    """A worktree probe found a real repo but ``git worktree list`` failed.
+    """Git discovery or a worktree file operation failed.
 
-    Distinct from "not a git repo", which the probe represents as an empty
-    list: the TUI surfaces this as an error row in the WORKSPACE column
-    rather than the benign "git not initialized" hint, so a genuine git
-    failure (corrupt repo, permission, broken git) isn't silently
-    mislabelled as "no repo here".
+    Confirmed non-repositories return None from discovery; backend, permission
+    and Git failures remain errors for the caller to display.
     """
 
 
@@ -58,6 +55,18 @@ class Workspace:
     branch: str
     path: str
     is_primary: bool
+
+
+@dataclass(frozen=True)
+class GitDiscovery:
+    """Git facts in one target user's filesystem, without launch authorization."""
+
+    target_path: str
+    current_root: str | None
+    primary_root: str | None
+    source_anchor: str
+    common_dir: str
+    workspaces: tuple[Workspace, ...]
 
 
 def parse_worktree_porcelain(text: str, *, repo_root: str) -> list[Workspace]:
@@ -100,14 +109,14 @@ def parse_worktree_porcelain(text: str, *, repo_root: str) -> list[Workspace]:
         is_bare = False
         is_detached = False
 
-    for raw in text.splitlines():
-        line = raw.rstrip("\n")
-        if not line.strip():
+    nul_delimited = "\0" in text
+    for line in text.split("\0") if nul_delimited else text.splitlines():
+        if not line:
             flush()
             continue
         if line.startswith("worktree "):
             flush()
-            path = line[len("worktree ") :].strip()
+            path = line[len("worktree ") :]
         elif line.startswith("HEAD "):
             head = line[len("HEAD ") :].strip()
         elif line.startswith("branch "):

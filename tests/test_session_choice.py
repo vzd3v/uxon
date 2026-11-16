@@ -210,10 +210,15 @@ class MainScreenHelperTests(unittest.TestCase):
                     done(choice)
 
                 host = SimpleNamespace(
-                    cfg=_mk_ctx(on_probe_existing_sessions=probe, launch_user="bob"),
-                    app=SimpleNamespace(push_screen=push, run_off_loop=run_off_loop_sync),
-                    _attach_session=lambda user, name, effects=effects: effects.append(
-                        ("attach", user, name)
+                    cfg=_mk_ctx(
+                        on_probe_existing_sessions=probe,
+                        launch_user="bob",
+                        on_attach=lambda user, name, expected=None: ("attach", user, name),
+                    ),
+                    app=SimpleNamespace(
+                        push_screen=push,
+                        run_off_loop=run_off_loop_sync,
+                        request_launch=effects.append,
                     ),
                 )
                 LaunchFlow(host).maybe_show_session_choice(

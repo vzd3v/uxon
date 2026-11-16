@@ -84,15 +84,12 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
                 "new -w requires an existing project directory: "
                 f"{project_dir} (create it first with 'uxon -n {name}')"
             )
-        seed_repo_root = git.git_repo_root_as_user(cfg, project_dir, seed_user)
+        seed_repo_root = git.git_common_dir_root_as_user(cfg, project_dir, seed_user)
         if not seed_repo_root:
             fail(
                 "new -w requires a git repository (checked as launch user "
                 f"{seed_user}) in {project_dir}"
             )
-        seed_primary = git.git_common_dir_root_as_user(cfg, project_dir, seed_user)
-        if seed_primary:
-            seed_repo_root = seed_primary
         compatibility_root = compute_worktree_path(
             repo_root=seed_repo_root, branch=branch, worktree_root=cfg.worktree_root
         )
@@ -107,16 +104,16 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
         )
         launch_user = resolved.launch_user
         ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-        repo_root = git.git_repo_root_as_user(cfg, project_dir, launch_user)
+        repo_root = (
+            seed_repo_root
+            if launch_user == seed_user
+            else git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
+        )
         if not repo_root:
             fail(
                 "new -w requires a git repository (checked as launch user "
                 f"{launch_user}) in {project_dir}"
             )
-        # Normalise worktree-from-worktree to the primary repo.
-        primary = git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
-        if primary:
-            repo_root = primary
         launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
         # uxon-managed worktree sessions live AT the worktree path,
         # so both the stem and the compatibility root are derived from the
@@ -139,15 +136,16 @@ def do_new(args: ParsedArgs, cfg: Config, caller_user: str) -> int:
             if next_launch_user != launch_user:
                 launch_user = next_launch_user
                 ensure_new_project_target_allowed(cfg, launch_user, project_dir)
-                repo_root = git.git_repo_root_as_user(cfg, project_dir, launch_user)
+                repo_root = (
+                    seed_repo_root
+                    if launch_user == seed_user
+                    else git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
+                )
                 if not repo_root:
                     fail(
                         "new -w requires a git repository (checked as launch user "
                         f"{launch_user}) in {project_dir}"
                     )
-                primary = git.git_common_dir_root_as_user(cfg, project_dir, launch_user)
-                if primary:
-                    repo_root = primary
                 launch_app.ensure_launch_target_allowed(cfg, launch_user, repo_root)
                 session_stem = session_stem_for_worktree(repo_root, branch)
                 if (

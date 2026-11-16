@@ -188,6 +188,7 @@ def build_tui_context(
     on_probe_existing_sessions = _wrap_tui_callback(bridge.on_probe_existing_sessions, _CbErr)
     on_git_remote_options = _wrap_tui_callback(bridge.on_git_remote_options, _CbErr)
     on_probe_worktrees = _wrap_tui_callback(bridge.on_probe_worktrees, _CbErr)
+    on_discover_worktrees = _wrap_tui_callback(bridge.on_discover_worktrees, _CbErr)
     on_create_worktree = _wrap_tui_callback(bridge.on_create_worktree, _CbErr)
     on_launch_existing_worktree = _wrap_tui_callback(bridge.on_launch_existing_worktree, _CbErr)
     on_probe_existing_worktree_sessions = _wrap_tui_callback(
@@ -379,6 +380,7 @@ def build_tui_context(
         on_probe_existing_sessions=on_probe_existing_sessions,
         on_git_remote_options=on_git_remote_options,
         on_probe_worktrees=on_probe_worktrees,
+        on_discover_worktrees=on_discover_worktrees,
         on_create_worktree=on_create_worktree,
         on_launch_existing_worktree=on_launch_existing_worktree,
         on_probe_existing_worktree_sessions=on_probe_existing_worktree_sessions,

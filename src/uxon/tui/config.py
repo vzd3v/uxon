@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from uxon.domain.launch_request import LaunchRequest
     from uxon.domain.session import BulkKillResult, KillResult, SessionIdentity
     from uxon.infra.remote_hosts import RemoteHost
+    from uxon.infra.worktrees import GitDiscovery
     from uxon.tui.refresh import SourceSpec
 
     from .context import ExistingSessionChoice, LaunchProfileOption, TuiContext
@@ -91,12 +92,13 @@ class TuiConfig:
     on_probe_cwd_writable: Callable[[], bool]
     on_launch_cwd: Callable[..., LaunchRequest]
     on_launch_new: Callable[[str, str, str, str], LaunchRequest]
-    on_launch_existing: Callable[[str, str, str], LaunchRequest]
+    on_launch_existing: Callable[..., LaunchRequest]
     on_list_project_directories: Callable[[str], list[tuple[str, str]]]
     on_runtime_gate: Callable[[str, str, str], RuntimeGate | None]
     on_probe_existing_sessions: Callable[[str, str, str], tuple[ExistingSessionChoice, ...]]
     on_git_remote_options: Callable[[str, str, str], tuple[list[tuple[str, str]], str]]
     on_probe_worktrees: Callable[[str, str, str], list]
+    on_discover_worktrees: Callable[[str, str], GitDiscovery | None]
     on_create_worktree: Callable[[str, str, str, str], LaunchRequest]
     on_launch_existing_worktree: Callable[[str, str, str, str, str], LaunchRequest]
     on_probe_existing_worktree_sessions: Callable[
@@ -157,6 +159,7 @@ class TuiConfig:
             on_probe_existing_sessions=ctx.on_probe_existing_sessions,
             on_git_remote_options=ctx.on_git_remote_options,
             on_probe_worktrees=ctx.on_probe_worktrees,
+            on_discover_worktrees=ctx.on_discover_worktrees,
             on_create_worktree=ctx.on_create_worktree,
             on_launch_existing_worktree=ctx.on_launch_existing_worktree,
             on_probe_existing_worktree_sessions=ctx.on_probe_existing_worktree_sessions,

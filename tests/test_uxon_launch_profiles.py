@@ -7,6 +7,7 @@ import io
 import json
 import shlex
 import subprocess
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -296,9 +297,36 @@ def test_cli_worktree_routes_reject_final_profile_path_before_discovery_or_git_m
         with subtests.test(action=action):
 
             def respond(user, command, kwargs):
-                assert user == "operator" and command[:3] == ["git", "-C", str(repo)]
-                assert "rev-parse" in command
-                return _cp(str(repo / ".git" if "--git-common-dir" in command else repo) + "\n")
+                assert user == "operator"
+                timeout = cfg.execution.backend_for_user(user).probe_timeout_seconds
+                assert command == [
+                    sys.executable,
+                    "-m",
+                    "uxon.infra.git_probe",
+                    "--mode",
+                    "discover",
+                    "--path",
+                    str(repo),
+                    "--timeout",
+                    str(timeout),
+                ]
+                assert kwargs["timeout"] == timeout
+                return _cp(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "error": "",
+                            "discovery": {
+                                "target_path": str(repo),
+                                "current_root": str(repo),
+                                "primary_root": str(repo),
+                                "source_anchor": str(repo),
+                                "common_dir": str(repo / ".git"),
+                                "workspaces": [],
+                            },
+                        }
+                    )
+                )
 
             commands = TargetCommands(respond)
             with commands.installed_boundary(), pytest.raises(SystemExit) as error:
@@ -462,6 +490,84 @@ def test_tui_new_existing_and_cwd_callbacks_execute_real_planner_with_effective_
     assert all(user == "alice" for user, _, _ in external.calls)
 
 
+@pytest.mark.parametrize("denied", [False, True])
+def test_runtime_gate_authorizes_canonical_target_before_runtime_commands(tmp_path, denied):
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    selected = allowed / "selected"
+    selected.symlink_to(outside if denied else allowed, target_is_directory=True)
+    cfg = _cfg(allowed)
+    cfg.runtimes["box"] = WorkloadRuntimeSpec(
+        id="box",
+        resource_name_template="box-{project_slug}",
+        exec_prefix=("engine", "exec", "{resource}"),
+        ready_command=("engine", "ready", "{resource}"),
+        exists_command=("engine", "exists", "{resource}"),
+        create_command=("engine", "create", "{resource}"),
+        on_missing="create",
+        approval="auto",
+    )
+    _pinned(cfg, "claude", "box")
+    runtime_calls = []
+
+    def respond(user, command, kwargs):
+        assert user == "alice" and command[:1] == ["engine"]
+        runtime_calls.append(command)
+        assert command[1] in {"ready", "exists"}
+        return _cp(rc=1)
+
+    bridge = TuiBridge(cfg, "operator", "startup", str(selected))
+    with TargetCommands(respond).installed_boundary():
+        if denied:
+            with pytest.raises(SystemExit) as error:
+                bridge.on_runtime_gate(str(selected), "claude", "normal")
+            assert error.value.uxon_msg == f"got: {outside}"
+            assert runtime_calls == []
+        else:
+            gate = bridge.on_runtime_gate(str(selected), "claude", "normal")
+            assert gate is not None and gate.needs_prepare and not gate.fail_message
+            assert runtime_calls == [
+                ["engine", "ready", "box-allowed"],
+                ["engine", "exists", "box-allowed"],
+            ]
+
+
+def test_worktree_planner_rejects_denied_source_before_git_or_filesystem_commands(tmp_path):
+    allowed = tmp_path / "allowed"
+    source = tmp_path / "outside-repository"
+    allowed.mkdir()
+    source.mkdir()
+    workroot = allowed / "worktrees"
+    cfg = _cfg(allowed, worktree_root=str(workroot))
+    _pinned(cfg, "claude")
+    destination = compute_worktree_path(
+        repo_root=str(source), branch="feature/x", worktree_root=str(workroot)
+    )
+
+    def unexpected(user, command, kwargs):
+        pytest.fail(f"Denied source reached external command as {user}: {command!r}")
+
+    boundary = TargetCommands(unexpected)
+    with boundary.installed_boundary():
+        resolved = resolve_launch_profile(
+            cfg, "operator", "claude", destination, "normal", target_may_not_exist=True
+        )
+        with pytest.raises(SystemExit) as error:
+            launch.plan_worktree_launch(
+                cfg, "operator", resolved, str(source), "feature/x", requested_profile="claude"
+            )
+        assert error.value.uxon_msg == f"got: {source}"
+        assert not workroot.exists()
+    assert all(
+        "uxon.infra.execution_probe" in command
+        or "uxon.infra.path_probe" in command
+        or command[:2] == ["sh", "-c"]
+        for _, command, _ in boundary.calls
+    )
+
+
 def test_worktree_planner_revalidates_after_real_add_mutation_and_maps_final_workload(
     tmp_path, monkeypatch, subtests
 ):
@@ -514,6 +620,24 @@ def test_worktree_planner_revalidates_after_real_add_mutation_and_maps_final_wor
                 repo=repo,
             ):
                 assert user == "alice"
+                if "uxon.infra.git_probe" in command:
+                    assert label in {"mapped", "empty-map"}
+                    assert command == [
+                        sys.executable,
+                        "-m",
+                        "uxon.infra.git_probe",
+                        "--mode",
+                        "copy",
+                        "--path",
+                        str(repo),
+                        "--timeout",
+                        str(cfg.execution.backend_for_user(user).probe_timeout_seconds),
+                        "--destination",
+                        str(path),
+                    ]
+                    assert kwargs["timeout"] is None
+                    assert path.is_dir() and len(mutations) == 1
+                    return _cp(json.dumps({"ok": True, "error": ""}))
                 if command[:2] == ["mkdir", "-p"]:
                     assert command[-1] == str(path.parent)
                     path.parent.mkdir(parents=True)

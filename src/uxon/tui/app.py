@@ -110,6 +110,11 @@ class UxonApp(App):
         # ``cfg`` is duplicated
         # state populated alongside the live ctx.
         self.cfg: TuiConfig = TuiConfig.from_context(ctx)
+        from .worktree_discovery import WorktreeDiscovery
+
+        self.worktree_discovery = WorktreeDiscovery(
+            lambda: self.call_later(self._update_worktree_discovery)
+        )
         self.state: TuiState = TuiState()
         # Seed the agent-availability slot from the cli-built initial
         # dict so the slot is canonical from construction.
@@ -728,6 +733,14 @@ class UxonApp(App):
 
     # ── Worker drain on teardown ────────────────────────────────────
 
+    def _update_worktree_discovery(self) -> None:
+        # Only update the visible subscriber. A completed advisory read must
+        # never advance a launch flow or push a late workspace chooser.
+        screen = self.screen_stack[-1] if self.screen_stack else None
+        update = getattr(screen, "update_git_status", None)
+        if callable(update):
+            update()
+
     def on_unmount(self) -> None:
         """Drain in-flight workers before the app loop returns.
 
@@ -737,6 +750,7 @@ class UxonApp(App):
         workers from this hook drains them before ``App.run()`` returns.
         """
         self._render.shutdown()
+        self.worktree_discovery.close()
         self._worker_coord.drain()
 
     def pop_until_main(self) -> None:

@@ -46,8 +46,9 @@ keymap survives a Cyrillic layout without `xkb` tweaks.
 Shown after picking a launch action (Open project / Create new project /
 Open in this folder). Two side-by-side panels — PROFILE and
 PERMISSION. Permission choices belong to the selected profile's underlying
-agent. Filesystem/worktree discovery runs off-loop as that profile's effective
-launch user after this selection.
+agent. Git discovery starts off-loop for highlighted projects and launch folders,
+shared by profiles using the same effective account/backend. Its status or error
+appears inline. Enter continues without waiting for Git.
 
 | Key | Action |
 |---|---|
@@ -58,10 +59,11 @@ launch user after this selection.
 
 ## Workspace screen
 
-For an existing git target, the next screen offers the primary tree, existing
-worktrees and `+ New worktree…`. Non-git targets skip this screen. A failed
-target-user probe reports its error rather than presenting a false non-git
-result. The final launch planner revalidates the chosen workspace.
+When Git discovery is ready at confirmation, the next screen defaults to
+**Current checkout**, followed by other workspaces and `+ New worktree…`.
+Pending, failed or non-git discovery skips this screen and continues in the
+selected folder; a later result never opens a delayed modal. The final launch
+planner revalidates the chosen workspace.
 
 | Key | Action |
 |---|---|

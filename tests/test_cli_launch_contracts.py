@@ -734,6 +734,23 @@ def test_actual_probe_and_planner_share_verified_compatibility_and_path_conflict
     )
     assert [choice[:3] for choice in choices] == [(user, "uxon-myapp-feature-auth@claude", False)]
     assert (choices[0][3].session_id, choices[0][3].launch_nonce) == ("$5", "5" * 32)
+    # Current checkout uses a plain path-based probe, but must still offer the
+    # protected session created through the worktree-qualified naming route.
+    assert ctx.on_probe_existing_sessions(str(wt), "claude", "normal") == choices
+    assert sessions_probe.probe_tui_compatible_sessions(cfg, user, str(wt), "codex") == ()
+    for active_path, dead in (
+        (str(root), False),
+        (str(wt / "nested"), False),
+        ("", False),
+        (str(wt), True),
+    ):
+        paths["$5"] = [active_path, dead]
+        assert ctx.on_probe_existing_sessions(str(wt), "claude", "normal") == ()
+    paths["$5"] = [str(wt), False]
+    original_row = rows[4]
+    rows[4] = rows[4].replace("5" * 32, "z" * 32)
+    assert ctx.on_probe_existing_sessions(str(wt), "claude", "normal") == ()
+    rows[4] = original_row
     planned = ctx.on_launch_existing_worktree(
         str(root / "myapp"), "feature/auth", str(wt), "claude", "normal"
     )
@@ -977,6 +994,8 @@ def test_public_list_and_destructive_json_dry_empty_and_refusal(
     assert json.loads(capsys.readouterr().out)["data"]["sessions"] == []
 
 
+# Real helper startup keeps the production 0.5s deadline; run in the serial integration lane.
+@pytest.mark.slow
 def test_one_git_tree_covers_include_intersection_planners_and_refusals(
     launch_boundary, monkeypatch, git_audit_sink
 ):
@@ -1225,14 +1244,14 @@ def test_one_git_tree_covers_include_intersection_planners_and_refusals(
     actual_query = run_query
 
     def rejected_list(argv, **kwargs):
-        if list(argv) == ["git", "-C", str(repo), "worktree", "list", "--porcelain"]:
-            return subprocess.CompletedProcess(argv, 128, "", "worktree-list-sentinel")
+        if "uxon.infra.git_probe" in argv and "discover" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, json.dumps({"ok": False, "error": "worktree-list-sentinel"}), ""
+            )
         return actual_query(argv, **kwargs)
 
-    import uxon.tui.bridge as bridge
-
     with monkeypatch.context() as scoped:
-        scoped.setattr(bridge, "run_query", rejected_list)
+        scoped.setattr(git, "run_query", rejected_list)
         with pytest.raises(CallbackError, match="worktree-list-sentinel"):
             ctx.on_probe_worktrees(str(repo), "claude", "normal")
     original = snapshot()
@@ -1285,3 +1304,30 @@ def test_one_git_tree_covers_include_intersection_planners_and_refusals(
     assert "fetch=" in planned.getvalue()
     assert snapshot() == before
     assert not (repo / ".uxon" / "worktrees" / "remote-dry").exists()
+    # Failure after Git creates the checkout preserves it and names the exact
+    # stage/path; the source include must not overwrite the branch's tracked file.
+    cfg.worktree_base = "local"
+    seed = root / "conflict-seed"
+    git_command("worktree", "add", "-b", "copy-conflict", str(seed))
+    (seed / ".env").write_bytes(b"tracked-destination")
+    subprocess.run(["git", "-C", str(seed), "add", "-f", ".env"], check=True)
+    subprocess.run(
+        ["git", "-C", str(seed), "commit", "-qm", "tracked include conflict"], check=True
+    )
+    git_command("worktree", "remove", str(seed))
+    retained = repo / ".uxon" / "worktrees" / "copy-conflict"
+    with pytest.raises(SystemExit) as caught:
+        launch.plan_worktree_launch(
+            cfg,
+            user,
+            resolve("copy-conflict"),
+            str(repo),
+            "copy-conflict",
+            requested_profile="claude",
+        )
+    assert caught.value.code == 2
+    assert str(retained) in caught.value.uxon_msg
+    assert "copying worktree include files failed" in caught.value.uxon_msg
+    assert "tracked destination" in caught.value.uxon_msg
+    assert (retained / ".env").read_bytes() == b"tracked-destination"
+    assert str(retained) in git_command("worktree", "list", "--porcelain")

@@ -968,6 +968,25 @@ def test_public_adapters_keep_server_files_git_workload_and_kill_inside_one_boun
             return _cp()
         assert user == "alice"
         emitted.append(command)
+        if "uxon.infra.git_probe" in command:
+            assert kwargs["timeout"] == 1.25
+            assert command[-4:] == ["--path", str(target), "--timeout", "1.25"]
+            return _cp(
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "error": "",
+                        "discovery": {
+                            "target_path": str(target),
+                            "current_root": str(target),
+                            "primary_root": str(target),
+                            "source_anchor": str(target),
+                            "common_dir": str(target / ".git"),
+                            "workspaces": [],
+                        },
+                    }
+                )
+            )
         if "uxon.infra.tmux_server_probe" in command:
             return _cp(
                 stdout=json.dumps(

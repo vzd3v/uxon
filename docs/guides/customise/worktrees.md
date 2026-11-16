@@ -11,14 +11,16 @@ worktree flag. For *why*, see
 1. Start uxon in (or open) a git repository.
 2. Trigger a launch — either **Open in this folder** (when uxon
    runs inside the repo) or **Open project** (for a git project
-   under `new_project_root`). Both show the workspace picker for a git
-   target; a non-git target skips it.
-3. Choose the launch profile and permission mode. Uxon probes the repository
-   as that profile's effective launch user, then opens the workspace screen.
-4. Pick the primary tree, an existing worktree, or **+ New
+   under `new_project_root`). Git discovery starts in the background while
+   browsing and choosing a profile; status and errors appear inline.
+3. Choose the launch profile and permission mode. Enter does not wait for Git:
+   pending, failed or non-git discovery continues in the selected folder.
+   Ready discovery opens the workspace screen; late results never open it.
+4. Keep **Current checkout** (the default), pick another workspace, or **+ New
    worktree…**. For a new worktree, type a branch name (`/` is
    allowed) and press Enter.
-5. uxon creates the worktree and launches the agent there.
+5. Uxon launches in the selected workspace, creating a worktree only for
+   **+ New worktree…**.
 
 ## From the CLI
 
@@ -37,6 +39,15 @@ new branches are set by
 Add a `.worktreeinclude` file (`.gitignore` syntax) at the repo
 root. On worktree creation uxon copies untracked, gitignored files
 that match its patterns (e.g. `.env`) into the new worktree.
+Only ordinary files are copied. Symlink traversal, existing destination files
+and tracked destination conflicts are rejected; source file permissions are preserved.
+Directory access follows the destination checkout, including for copied files
+whose source access relied on a private parent directory.
+Uncommitted tracked changes are not transferred.
+
+If a step after creation fails, the error names the retained worktree and failed
+stage. Inspect that directory and open it again after resolving the problem;
+Uxon does not automatically delete the checkout or branch.
 
 ## Removing a worktree
 

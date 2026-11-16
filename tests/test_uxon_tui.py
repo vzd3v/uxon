@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest import mock
 
 from uxon import tui as uxon_tui
 from uxon.domain.agents import DEFAULT_AGENT_CATALOG as _CATALOG
@@ -47,59 +46,6 @@ from uxon.tui.state import (
 )
 
 _CATALOG_IDS = tuple(_CATALOG)
-
-
-class WorkspaceContinuationTests(unittest.TestCase):
-    def test_out_of_order_probes_keep_current_modal_and_its_repository(self) -> None:
-        from helpers import make_launch_profile_options
-
-        from uxon.infra.worktrees import Workspace
-        from uxon.tui.screens.launch_flow import LaunchFlow
-        from uxon.tui.screens.workspace import WorkspaceScreen
-
-        pushed, workers, created = [], [], []
-        app = SimpleNamespace(
-            state=None,
-            push_screen=lambda screen, callback: pushed.append((screen, callback)),
-            run_off_loop=lambda fn, **kw: workers.append((fn, kw)),
-            request_launch=mock.Mock(),
-            notify=mock.Mock(),
-        )
-        cfg = _ctx(
-            launch_profiles=make_launch_profile_options(),
-            on_create_worktree=lambda *args: created.append(args),
-        )
-        host = SimpleNamespace(
-            app=app,
-            cfg=cfg,
-            state=SimpleNamespace(agent_availability=SimpleNamespace(value=cfg.agent_availability)),
-        )
-        app.screen = host
-        flow = LaunchFlow(host)
-        for target in ("/srv/a/subdir", "/srv/b/subdir"):
-            flow.begin_launch_in_folder(
-                target_dir=target, target_label=target, commit_primary=mock.Mock()
-            )
-            pushed[-1][1](("claude", "normal"))
-        for index, root in ((1, "/srv/b"), (0, "/srv/a")):
-            workers[index][1]["on_success"]([Workspace(root, "main", root, True)])
-            if index == 1:
-                app.screen = pushed[-1][0]
-        self.assertIsInstance(app.screen, WorkspaceScreen)
-        self.assertEqual(len(pushed), 3)  # two profile choices, only the current workspace
-        pushed[-1][1](("new", None))
-        pushed[-1][1]("feature/b")
-        workers[-1][0]()
-        self.assertEqual(created, [("/srv/b", "feature/b", "claude", "normal")])
-        app.screen = host
-        flow.begin_launch_in_folder(
-            target_dir="/srv/c", target_label="c", commit_primary=mock.Mock()
-        )
-        pushed[-1][1](("claude", "normal"))
-        app.screen = SimpleNamespace()  # an unrelated modal opened during the current probe
-        count = len(pushed)
-        workers[-1][1]["on_success"]([Workspace("c", "main", "/srv/c", True)])
-        self.assertEqual(len(pushed), count)
 
 
 def _ctx(**overrides) -> uxon_tui.TuiContext:

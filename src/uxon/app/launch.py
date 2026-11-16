@@ -298,6 +298,9 @@ def plan_worktree_launch(
         repo_root=repo_root, branch=branch_name, worktree_root=cfg.worktree_root
     )
     launch_user = resolved_profile.launch_user
+    # Git creation writes the source repository even when worktree_root puts
+    # the checkout elsewhere. Authorize both paths before any mutation.
+    ensure_launch_target_allowed(cfg, launch_user, repo_root)
     worktree_path = execution.canonicalize_path(cfg, launch_user, worktree_path, intended=True)
     # Gate the computed path BEFORE any git work or mkdir. An
     # out-of-roots worktree_root is the common failure — name the override
@@ -435,54 +438,68 @@ def plan_worktree_launch(
             f"(pick another branch name). git said: {stderr or 'no detail'}"
         )
 
-    resolved_profile = launch_profile_app.revalidate_launch_profile(
-        cfg,
-        caller_user,
-        resolved_profile,
-        worktree_path,
-        requested_profile=requested_profile,
-        mode_id=resolved_profile.mode_id,
-        git_remote_selector=git_remote_selector,
-    )
-    launch_user = resolved_profile.launch_user
-    worktree_path = resolved_profile.canonical_target
+    # Creation has succeeded. A later failure leaves the operator's checkout
+    # intact and names its original path even if revalidation fails or remaps it.
+    created_path = worktree_path
+    stage = "launch-profile validation"
+    try:
+        resolved_profile = launch_profile_app.revalidate_launch_profile(
+            cfg,
+            caller_user,
+            resolved_profile,
+            worktree_path,
+            requested_profile=requested_profile,
+            mode_id=resolved_profile.mode_id,
+            git_remote_selector=git_remote_selector,
+        )
+        launch_user = resolved_profile.launch_user
+        worktree_path = resolved_profile.canonical_target
 
-    git.copy_worktreeinclude_matches(cfg, repo_root, worktree_path, launch_user)
+        stage = "copying worktree include files"
+        git.copy_worktreeinclude_matches(cfg, repo_root, worktree_path, launch_user)
 
-    # Workload-runtime readiness for the worktree. The directory only exists
-    # after the add above, so its name/{dir} can't be resolved earlier — the
-    # TUI's pre-launch prompt affordance (which needs the path up front) does
-    # not cover this path, so it uses the headless auto-if-permitted policy
-    # documented for non-interactive worktree creation.
-    ensure_runtime_ready(cfg, worktree_path, resolved_profile)
+        # The directory exists only after add, so runtime readiness must be
+        # resolved here using the configured headless preparation policy.
+        stage = "runtime preparation"
+        ensure_runtime_ready(cfg, worktree_path, resolved_profile)
 
-    snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
-    sessions = list(snapshot.sessions)
-    session = allocate_session_name(
-        session_stem,
-        resolved_profile.profile.id,
-        worktree_path,
-        sessions,
-        prefix=cfg.session_prefix,
-    )
-    req = tmux._build_tmux_launch_request(
-        worktree_path,
-        session,
-        run_args,
-        cfg,
-        branch_name,
-        resolved_profile=resolved_profile,
-        server_running=snapshot.server_state == "running",
-    )
+        stage = "reading existing sessions"
+        snapshot = sessions_probe.collect_current_session_snapshot(cfg, launch_user)
+        sessions = list(snapshot.sessions)
+        session = allocate_session_name(
+            session_stem,
+            resolved_profile.profile.id,
+            worktree_path,
+            sessions,
+            prefix=cfg.session_prefix,
+        )
+        stage = "building the launch request"
+        req = tmux._build_tmux_launch_request(
+            worktree_path,
+            session,
+            run_args,
+            cfg,
+            branch_name,
+            resolved_profile=resolved_profile,
+            server_running=snapshot.server_state == "running",
+        )
 
-    _audit.audit(
-        "worktree.create",
-        profile=resolved_profile.profile.id,
-        agent=resolved_profile.agent.id,
-        project=repo_root,
-        branch=branch_name,
-        path=worktree_path,
-        base=base,
-        session=session,
-    )
-    return req
+        stage = "recording worktree creation"
+        _audit.audit(
+            "worktree.create",
+            profile=resolved_profile.profile.id,
+            agent=resolved_profile.agent.id,
+            project=repo_root,
+            branch=branch_name,
+            path=worktree_path,
+            base=base,
+            session=session,
+        )
+        return req
+    except (Exception, SystemExit) as exc:
+        detail = getattr(exc, "uxon_msg", None) or str(exc)
+        code = exc.code if isinstance(exc, SystemExit) else 2
+        fail(
+            f"Worktree created at {created_path!r}; {stage} failed: {detail}",
+            code if isinstance(code, int) and code else 2,
+        )
