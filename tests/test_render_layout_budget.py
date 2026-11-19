@@ -17,6 +17,9 @@ from uxon.tui.widgets.session_list_view import SessionListView
 
 async def _settle(pilot, app, screen):
     await pilot.pause()
+    # Focus/scroll animations may be scheduled while layout flags are briefly
+    # clear. Finish that work before attributing layouts to the next refresh.
+    await pilot.wait_for_scheduled_animations()
     for _ in range(25):
         if (
             app._render._timer is None
