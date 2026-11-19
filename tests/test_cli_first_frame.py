@@ -16,6 +16,7 @@ import os,sys,pwd,time,json
 from pathlib import Path
 from uxon.infra import config_loader,probes,tmux,version_probe
 from uxon.infra.config_renderer import render_config
+from uxon.domain.execution import LOCAL_PROBE_TIMEOUT_SECONDS
 from uxon.cli.main import main
 root=Path(ROOT)
 user=pwd.getpwuid(os.getuid()).pw_name
@@ -33,7 +34,7 @@ Path.read_text=proc
 import subprocess
 def query(argv,*,timeout):
     assert argv == [sys.executable,'-m','uxon.infra.tmux_server_probe','--socket',str(root/'uxon.sock')],argv
-    assert timeout == .5
+    assert timeout == LOCAL_PROBE_TIMEOUT_SECONDS
     return subprocess.CompletedProcess(argv,0,json.dumps({'state':'absent','sessions':[],'error':''}),'')
 tmux.run_query=query
 def discovery(argv,*,timeout):

@@ -61,7 +61,6 @@ emergency. The guard is idempotent — installing twice is a no-op.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import contextvars
 import os
@@ -107,6 +106,10 @@ def assert_off_event_loop(what: str = "blocking call") -> None:
     """
     if _guard_disabled():
         return
+    # Short-lived backend helpers only use sanctioned_spawn; importing asyncio
+    # for them adds startup cost to every poll without installing a loop guard.
+    import asyncio
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:

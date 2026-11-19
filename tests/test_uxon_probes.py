@@ -119,9 +119,12 @@ def test_public_host_probe_batches_catalog_and_normalizes_failures(subtests):
     assert run.call_count == 1
 
 
-# Real helper startup keeps the production 0.5s deadline; run in the serial integration lane.
+# Real helper startup uses the production deadline; run in the serial integration lane.
 @pytest.mark.slow
-def test_broken_executable_shim_is_reported_and_rechecked_after_repair(tmp_path, capsys):
+def test_broken_executable_shim_is_reported_and_rechecked_after_repair(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     shim = tmp_path / "agent"
     missing = tmp_path / "missing-executable"
     marker = tmp_path / "executions"

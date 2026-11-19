@@ -9,12 +9,12 @@ Design constraints:
   picked up by restarting ``uxon``. There is no daemon, no SIGHUP, no
   per-refresh re-probe.
 - **Non-interactive.** Every probe uses ``sudo -n`` (no password
-  prompt, no keyboard interaction). A 0.5s per-probe timeout bounds
-  startup delay.
+  prompt, no keyboard interaction). The selected backend's probe timeout
+  bounds startup delay, including target-user Python helper startup.
 - **Parallel.** Up to 8 probes run concurrently via
-  ``ThreadPoolExecutor``. With the 0.5s per-probe ceiling the
+  ``ThreadPoolExecutor``. With the built-in 5s per-probe ceiling the
   worst-case total wall time for N candidates is
-  ``ceil(N / 8) * 0.5s`` — ~1s for the typical N <= 16.
+  ``ceil(N / 8) * 5s``; successful probes finish as soon as they return.
 - **Self-exclusion.** ``reachable_users`` never contains the OS user
   the process is running as: that's just "me", not "another reachable
   user", and the caller filters self out before listing.
@@ -41,10 +41,6 @@ from uxon.infra.execution import probe as probe_execution
 
 __all__ = ["SudoCapability", "probe_sudo_capability"]
 
-
-PROBE_TIMEOUT_SEC = 0.5
-"""Per-probe timeout budget. A slow PAM module that takes longer
-than this is treated as "not reachable" — startup must not block."""
 
 MAX_WORKERS = 8
 """Upper bound on concurrent probes. Sudo doesn't share inter-process
@@ -83,11 +79,9 @@ def probe_sudo_capability(cfg: Config, candidates: Iterable[str]) -> SudoCapabil
     ``reachable_users`` with a meaningless entry the TUI then has to
     strip.
 
-    Per-probe budget is :data:`PROBE_TIMEOUT_SEC` (0.5s); there is no
-    override knob. The probe is invoked at most once per process at
-    startup. Per-refresh re-probing is intentionally absent, so a tunable
-    timeout has no caller today and offering one in the API would be
-    misleading.
+    Per-probe budget comes from the selected execution backend. The probe is
+    invoked at most once per process at startup; per-refresh re-probing is
+    intentionally absent.
 
     Returns a :class:`SudoCapability` snapshot. The function never
     raises for a probe failure — failures map to "not reachable".

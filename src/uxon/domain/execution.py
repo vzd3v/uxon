@@ -11,7 +11,10 @@ from typing import Literal
 
 from uxon.errors import fail
 
-LOCAL_PROBE_TIMEOUT_SECONDS = 0.5
+LOCAL_PROBE_TIMEOUT_SECONDS = 5.0
+# Built-in policy changes must not invalidate protected records or fingerprinted
+# socket paths belonging to live sessions created by earlier 4.0.x versions.
+_LOCAL_FINGERPRINT_PROBE_TIMEOUT_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -27,7 +30,11 @@ class ExecutionBackendSpec:
             "id": self.id,
             "kind": self.kind,
             "command_prefix": self.command_prefix,
-            "probe_timeout_seconds": self.probe_timeout_seconds,
+            "probe_timeout_seconds": (
+                _LOCAL_FINGERPRINT_PROBE_TIMEOUT_SECONDS
+                if self.kind == "local"
+                else self.probe_timeout_seconds
+            ),
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         return hashlib.sha256(raw.encode()).hexdigest()

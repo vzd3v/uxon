@@ -9,18 +9,21 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from uxon import __version__
 from uxon.infra.remote.envelope import decode_envelope
 
 
-def test_cli_import_rejects_all_heavy_namespaces_in_one_fresh_process() -> None:
+@pytest.mark.parametrize("module", ["uxon.cli", "uxon.infra.tmux_server_probe"])
+def test_cli_import_rejects_all_heavy_namespaces_in_one_fresh_process(module: str) -> None:
     env = dict(os.environ)
     env.pop("UXON_DEBUG", None)
     result = subprocess.run(
         [
             sys.executable,
             "-c",
-            "import json, sys, uxon.cli; print(json.dumps(sorted(sys.modules)))",
+            f"import json, sys, {module}; print(json.dumps(sorted(sys.modules)))",
         ],
         capture_output=True,
         text=True,
@@ -30,6 +33,8 @@ def test_cli_import_rejects_all_heavy_namespaces_in_one_fresh_process() -> None:
     )
     modules = json.loads(result.stdout)
     forbidden = ("textual", "uxon.tui", "uxon.infra.probes", "uxon.infra.agents", "structlog")
+    if module == "uxon.infra.tmux_server_probe":
+        forbidden += ("asyncio",)
     offenders = [
         m for m in modules if any(m == prefix or m.startswith(prefix + ".") for prefix in forbidden)
     ]

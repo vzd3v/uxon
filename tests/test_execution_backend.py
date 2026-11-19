@@ -9,6 +9,7 @@ import shutil
 import socket as unix_socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -75,6 +76,31 @@ def _command_cfg(
 
 def _cp(*, stdout: str = "", stderr: str = "", returncode: int = 0):
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+
+def test_local_probe_policy_preserves_v4_session_fingerprint():
+    backend = make_config().execution.backend_for_user("alice")
+    assert backend.fingerprint == "4a5d61a63083490eaca6261bc93fc0e731c51affc854f9490ad209977853faf3"
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("real_execution", "real_host_probes")
+def test_local_tmux_probe_survives_slow_helper_startup(tmp_path):
+    helper = tmp_path / "delayed-python"
+    helper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys, time\n"
+        "time.sleep(0.75)\n"
+        f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+    )
+    helper.chmod(0o700)
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    with mock.patch("uxon.infra.tmux.sys", SimpleNamespace(executable=str(helper))):
+        result = tmux.probe_tmux_server(
+            make_config(), identity.process_user(), str(directory / "missing.sock")
+        )
+    assert result == tmux.TmuxServerProbe("absent")
 
 
 @pytest.mark.usefixtures("real_execution", "real_host_probes")

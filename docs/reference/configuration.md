@@ -194,6 +194,11 @@ probes, runtime lifecycle, and workload launch. `local` is built in.
 | `execution.backends.<id>.command_prefix` | array | — | Prefix for every target-user command. Exactly one `{user}` placeholder is required. |
 | `execution.backends.<id>.probe_timeout_seconds` | number | `5.0` | Positive probe timeout. |
 
+The built-in local backend uses a 5-second probe budget, including sudo and
+Python helper startup. Its fingerprint stays compatible with earlier 4.0.x
+sessions when built-in timeout policy changes. Configured command backends
+retain their explicit timeout and fingerprint semantics.
+
 `command_prefix` is an argv template, not a shell command. It must be nonempty;
 its first element must be an absolute executable path; and `{user}` must appear
 exactly once as the only placeholder. Format conversions and format specs are

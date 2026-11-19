@@ -994,7 +994,7 @@ def test_public_list_and_destructive_json_dry_empty_and_refusal(
     assert json.loads(capsys.readouterr().out)["data"]["sessions"] == []
 
 
-# Real helper startup keeps the production 0.5s deadline; run in the serial integration lane.
+# Real helper startup uses the production deadline; run in the serial integration lane.
 @pytest.mark.slow
 def test_one_git_tree_covers_include_intersection_planners_and_refusals(
     launch_boundary, monkeypatch, git_audit_sink

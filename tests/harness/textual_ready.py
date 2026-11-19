@@ -8,6 +8,10 @@ from collections.abc import Callable
 from textual.events import Key
 from textual.pilot import Pilot
 
+_UI_READY_TIMEOUT_SECONDS = 15
+# This is a deadlock bound, not a UI latency assertion. Shared runners may
+# spend several seconds descheduled while a correctly queued refresh completes.
+
 
 async def painted(pilot: Pilot) -> None:
     """Drain widget queues and positively acknowledge a completed screen refresh.
@@ -16,7 +20,7 @@ async def painted(pilot: Pilot) -> None:
     observe their worker result separately; geometry/animation tests use Pilot's
     ordinary synchronization.
     """
-    async with asyncio.timeout(5):
+    async with asyncio.timeout(_UI_READY_TIMEOUT_SECONDS):
         await pilot.pause(0)
         assert await pilot.app.screen.wait_for_refresh(), "screen did not acknowledge refresh"
 
@@ -24,7 +28,7 @@ async def painted(pilot: Pilot) -> None:
 async def wait_until(pilot: Pilot, ready: Callable[[], bool], description: str) -> None:
     """Wait for an observable continuation and its paint, with a bounded failure."""
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(_UI_READY_TIMEOUT_SECONDS):
             while True:
                 await painted(pilot)
                 if ready():
@@ -46,6 +50,6 @@ async def send_key(pilot: Pilot, key: str, character: str | None = None) -> None
     # Acknowledge the app queue first, then drain the receiving widget queues.
     dispatched = asyncio.Event()
     assert pilot.app.call_later(dispatched.set), "app refused key dispatch acknowledgement"
-    async with asyncio.timeout(5):
+    async with asyncio.timeout(_UI_READY_TIMEOUT_SECONDS):
         await dispatched.wait()
     await painted(pilot)

@@ -53,7 +53,7 @@ def repository(path: Path, *, metadata: Path | None = None) -> Path:
     return path
 
 
-# Real helper startup keeps the production 0.5s deadline; run in the serial integration lane.
+# Real helper startup uses the production deadline; run in the serial integration lane.
 @pytest.mark.slow
 def test_real_discovery_preserves_git_layout_paths_and_errors(tmp_path):
     cfg, user = make_config(), process_user()
