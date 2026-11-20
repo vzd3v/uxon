@@ -13,6 +13,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - TUI and launch preparation no longer execute agents to check their versions. TUI command discovery runs once in the background and is reused across dashboard entries; restart Uxon to discover newly installed agents. Doctor keeps its existing executable checks.
 
 ### Fixed
+- Project and profile pickers hide pending and absent Git hints, group matching Git details across accounts, and avoid redundant status and folder-list redraws.
 - Local execution probes allow time for sudo and Python helper startup under CPU contention instead of reporting healthy tmux servers as unreachable after 0.5 seconds. Short-lived helpers avoid loading the event-loop library. Existing session records and socket identities remain compatible.
 - Workspace choices consistently control session checks, runtime preparation and the launched directory. Git discovery errors stay visible inline; separate Git directories and unusual path characters are handled explicitly.
 - Worktree include copying rejects overwrites, tracked conflicts and symlink traversal while preserving file permissions. Exclusion updates preserve shared-file ownership and access rules; failures after worktree creation report the retained path and failed stage.

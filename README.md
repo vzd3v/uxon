@@ -88,7 +88,7 @@ See [client setup](docs/clients.md), [privacy](docs/privacy.md),
 `uxon` (no args, on a TTY) opens a full-screen picker:
 
 - **Open project** — browse and pick a directory at any depth under
-  `new_project_root` and launch.
+  `new_project_root` and launch, with compact Git details only when available.
 - **Create new project** — prompt for a name, create
   `<new_project_root>/<name>`, optionally create a GitHub repo,
   launch the agent.

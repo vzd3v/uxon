@@ -27,6 +27,7 @@ from ..state import (
     update_launch_options_after_availability,
 )
 from ..widgets.cyclic_list_view import CyclicListView
+from ..widgets.git_status import GitStatus
 
 
 class _PermissionModeItem(ListItem):
@@ -157,14 +158,11 @@ class LaunchOptionsScreen(ModalScreen["tuple[str, str] | None"]):
                 with Vertical(id="mode-panel"):
                     yield Static("Permission mode", classes="panel-title")
                     yield CyclicListView(id="mode-list")
-            yield Static("", id="git-status", markup=False)
+            yield GitStatus()
 
     def update_git_status(self) -> None:
         if self.is_mounted:
-            status = self.query_one("#git-status", Static)
-            text = self._git_status(self._current_agent)
-            status.display = bool(text)
-            status.update(text)
+            self.query_one(GitStatus).set_status(self._git_status(self._current_agent))
 
     async def on_mount(self) -> None:
         if not self._visible_agents:

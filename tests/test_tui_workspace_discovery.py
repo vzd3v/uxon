@@ -106,6 +106,60 @@ def test_prefetch_deduplicates_profiles_bounds_obsolete_queue_and_keys_backend()
 
 
 @pytest.mark.parametrize(
+    "outcomes,expected",
+    [
+        (("nongit", "nongit"), ""),
+        (("ready", "ready"), "alice, bob: Git · main"),
+        (("ready", "nongit"), "alice: Git · main"),
+        (("error", "nongit"), "alice: Git unavailable: corrupt HEAD"),
+        (("ready", "error"), "alice: Git · main\nbob: Git unavailable: corrupt HEAD"),
+    ],
+)
+def test_git_status_hides_pending_and_nongit_and_groups_matching_details(outcomes, expected):
+    condition = threading.Condition()
+    release = threading.Event()
+
+    def changed():
+        with condition:
+            condition.notify_all()
+
+    def discover(path, user):
+        assert release.wait(5), "test failed to release discovery"
+        outcome = outcomes[("alice", "bob").index(user)]
+        if outcome == "error":
+            raise RuntimeError("corrupt HEAD")
+        if outcome == "nongit":
+            return None
+        return GitDiscovery(
+            path, path, path, path, path + "/.git", (Workspace("main", "main", path, True),)
+        )
+
+    profiles = {user: LaunchProfileOption(user, user, "claude", user) for user in ("alice", "bob")}
+    ctx = context(
+        enabled_profiles=tuple(profiles), launch_profiles=profiles, on_discover_worktrees=discover
+    )
+    cache = WorktreeDiscovery(changed)
+    try:
+        cache.prefetch(ctx, "/srv/work/project")
+        assert cache.status(ctx, "/srv/work/project") == ""
+        release.set()
+        with condition:
+            assert condition.wait_for(
+                lambda: all(
+                    cache.peek(ctx, "/srv/work/project", user).status != "pending"
+                    for user in profiles
+                ),
+                5,
+            )
+        assert cache.status(ctx, "/srv/work/project") == expected
+        if outcomes[0] == "ready":
+            assert cache.status(ctx, "/srv/work/project", "alice") == "Git · main"
+    finally:
+        release.set()
+        cache.close()
+
+
+@pytest.mark.parametrize(
     "choice,expected",
     [(0, "/srv/work/linked/nested"), (1, "/srv/work/main"), (3, "/srv/work/other")],
 )

@@ -90,20 +90,27 @@ class WorktreeDiscovery:
 
     def status(self, ctx: TuiContext, path: str, user: str | None = None) -> str:
         users = (user,) if user is not None else self.users(ctx)
-        lines = []
+        details: dict[str, list[str]] = {}
         for target_user in users:
             state = self.peek(ctx, path, target_user)
-            label = f"{target_user}: " if len(users) > 1 else ""
             if state.status == "error":
-                detail = f"Git unavailable: {state.error}. Enter continues in this folder."
-            elif state.status == "pending":
-                detail = "Checking Git… Enter continues in this folder without waiting."
-            elif state.status == "ready":
-                detail = "Git workspaces available; current checkout is the default."
+                detail = f"Git unavailable: {state.error}"
+            elif state.status == "ready" and state.discovery is not None:
+                discovery = state.discovery
+                current = next(
+                    (w for w in discovery.workspaces if w.path == discovery.current_root), None
+                )
+                detail = f"Git · {current.label}" if current else "Git"
+                others = len(discovery.workspaces) - (current is not None)
+                if others:
+                    detail += f" · {others} other workspace{'s' if others != 1 else ''}"
             else:
-                detail = "Git not initialized; Enter continues in this folder."
-            lines.append(label + detail)
-        return "\n".join(lines)
+                continue
+            details.setdefault(detail, []).append(target_user)
+        return "\n".join(
+            (f"{', '.join(accounts)}: " if len(users) > 1 else "") + detail
+            for detail, accounts in details.items()
+        )
 
     @staticmethod
     def _read(fetch: Callable[[], GitDiscovery | None]) -> DiscoveryState:

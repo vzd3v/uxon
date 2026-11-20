@@ -852,12 +852,17 @@ class ExistingProjectSearchTests(unittest.IsolatedAsyncioTestCase):
             screen = app.screen
             self.assertIsInstance(screen, ExistingProjectScreen)
             fi = screen.query_one(FilterInput)
+            rows = tuple(screen.query_one(ListView).children)
             fi.input.value = "grou"
             await wait_until(pilot, lambda: fi.value == "grou", "parent filter")
             await send_key(pilot, "p", "p")
             self.assertEqual(fi.value, "group")
             self.assertEqual(str(fi.query_one("#match-count", Static).content), "2 matches")
+            self.assertEqual(tuple(screen.query_one(ListView).children), rows)
             await send_key(pilot, "down")
+            self.assertEqual(screen.query_one(ListView).index, 1)
+            await screen.update_root(list(screen.projects))
+            self.assertEqual(tuple(screen.query_one(ListView).children), rows)
             self.assertEqual(screen.query_one(ListView).index, 1)
             await send_key(pilot, "right")
             await wait_until(

@@ -47,8 +47,10 @@ Shown after picking a launch action (Open project / Create new project /
 Open in this folder). Two side-by-side panels — PROFILE and
 PERMISSION. Permission choices belong to the selected profile's underlying
 agent. Git discovery starts off-loop for highlighted projects and launch folders,
-shared by profiles using the same effective account/backend. Its status or error
-appears inline. Enter continues without waiting for Git.
+shared by profiles using the same effective account/backend. Only discovered Git
+details and errors appear inline; pending and non-git results stay hidden.
+Matching details across accounts share one line. Enter continues without waiting
+for Git.
 
 | Key | Action |
 |---|---|

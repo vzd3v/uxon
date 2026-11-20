@@ -53,6 +53,44 @@ async def _land(pilot, app, ctx):
 
 
 class LayoutBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_picker_unchanged_status_and_rows_do_not_request_layout(self):
+        from textual.widgets import ListView
+
+        from uxon.tui.screens.existing import ExistingProjectScreen
+        from uxon.tui.widgets.git_status import GitStatus
+
+        app = UxonApp(_mk_ctx(), probe_agents=False)
+        current_status = ""
+        screen = ExistingProjectScreen(
+            [("alpha", ""), ("beta", "")],
+            "/srv/work",
+            git_status=lambda: current_status,
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await app.push_screen(screen)
+            await _settle(pilot, app, screen)
+            rows = tuple(screen.query_one(ListView).children)
+            layouts = []
+            original_layout = Screen._refresh_layout
+
+            def count_layout(current, *args, **kwargs):
+                if current is screen and current._layout_required:
+                    layouts.append(True)
+                return original_layout(current, *args, **kwargs)
+
+            for current_status in ("", "Git · main", ""):
+                screen.update_git_status()
+                await _settle(pilot, app, screen)
+                self.assertEqual(screen.query_one(GitStatus).display, bool(current_status))
+                layouts.clear()
+                with patch.object(Screen, "_refresh_layout", count_layout):
+                    for _ in range(3):
+                        screen.update_git_status()
+                        await screen.update_root(list(screen.projects))
+                    await _settle(pilot, app, screen)
+                self.assertEqual(layouts, [], "identical picker data must not resize the screen")
+                self.assertEqual(tuple(screen.query_one(ListView).children), rows)
+
     async def test_production_refresh_and_modal_preserve_geometry_visible_values_and_cursor(self):
         sessions = [_session(f"uxon-row{i:03d}@claude") for i in range(200)]
         ctx = _mk_ctx(sessions=sessions, tui_render_debounce_ms=10, tui_render_max_latency_ms=50)

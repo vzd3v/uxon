@@ -25,6 +25,7 @@ from ..keymap import bindings_with_aliases
 from ..state import ProjectBrowserLevel, filter_existing_projects
 from ..widgets.cyclic_list_view import CyclicListView
 from ..widgets.filter_input import FilterChanged, FilterInput
+from ..widgets.git_status import GitStatus
 from .modal_base import CardModal
 
 
@@ -130,6 +131,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
         # Filtered view drives the ListView render and Enter's row
         # resolution; kept in sync with the input via ``on_filter_changed``.
         self._filtered: list[tuple[str, str]] = list(projects)
+        self._rendered_rows = tuple(self._filtered)
 
     def compose(self) -> ComposeResult:
         with self.card():
@@ -142,7 +144,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
             ]
             yield CyclicListView(*items, id="existing-list")
             yield Static("", id="browser-status", markup=False)
-            yield Static("", id="git-status", markup=False)
+            yield GitStatus()
             yield Footer()
 
     def on_mount(self) -> None:
@@ -152,7 +154,7 @@ class ExistingProjectScreen(CardModal["str | None"]):
 
     def update_git_status(self) -> None:
         if self.is_mounted:
-            self.query_one("#git-status", Static).update(self._git_status())
+            self.query_one(GitStatus).set_status(self._git_status())
 
     def _highlight_changed(self) -> None:
         if self.is_mounted:
@@ -179,6 +181,9 @@ class ExistingProjectScreen(CardModal["str | None"]):
         self._filtered = filter_existing_projects(projects, self.query_one(FilterInput).value)
         index = _selection_index(previous, index, self._filtered)
         self._error = error
+        if not self._loading and previous == self._filtered:
+            self._sync_browser_status()
+            return
         self._loading = True
         await self._render_list(index)
         self._loading = False
@@ -311,7 +316,11 @@ class ExistingProjectScreen(CardModal["str | None"]):
     async def on_filter_changed(self, event: FilterChanged) -> None:
         if event.text != self.query_one(FilterInput).value:
             return
-        self._filtered = filter_existing_projects(self.projects, event.text)
+        filtered = filter_existing_projects(self.projects, event.text)
+        if filtered == self._filtered:
+            self._sync_match_count()
+            return
+        self._filtered = filtered
         await self._render_list()
 
     async def _render_list(self, index: int | None = 0) -> None:
@@ -322,20 +331,26 @@ class ExistingProjectScreen(CardModal["str | None"]):
         # disappears) until the operator nudges the list. Awaiting both
         # keeps Enter pointing at the visible top match.
         lv = self.query_one(ListView)
-        await lv.clear()
-        if self._filtered:
+        rows = tuple(self._filtered)
+        if rows != self._rendered_rows:
+            await lv.clear()
             await lv.extend(
                 [
                     ListItem(Label(_row_label(name, mtime), markup=False))
                     for name, mtime in self._filtered
                 ]
             )
+            self._rendered_rows = rows
+        if self._filtered:
             lv.index = min(index or 0, len(self._filtered) - 1)
         else:
             lv.index = None
         self._sync_match_count()
         path = str(PurePosixPath(self.project_root) / self._directory)
-        self.query_one("#project-path", Static).update(f"  {path}/")
+        project_path = self.query_one("#project-path", Static)
+        text = f"  {path}/"
+        if project_path.content != text:
+            project_path.update(text)
         self._sync_browser_status()
 
         if not self._loading:
@@ -345,9 +360,10 @@ class ExistingProjectScreen(CardModal["str | None"]):
         status = (
             "" if self._filtered else "No matching folders" if self.projects else "No subfolders"
         )
-        self.query_one("#browser-status", Static).update(
-            "Loading…" if self._loading else self._error or status
-        )
+        text = "Loading…" if self._loading else self._error or status
+        browser_status = self.query_one("#browser-status", Static)
+        if browser_status.content != text:
+            browser_status.update(text)
 
     def _sync_match_count(self) -> None:
         self.query_one(FilterInput).set_match_count(len(self._filtered))

@@ -68,10 +68,9 @@ class FilterInput(Widget):
         self.post_message(FilterChanged(event.value))
 
     def set_match_count(self, count: int) -> None:
-        if not self.input.value:
-            self._counter.update("")
-            return
-        self._counter.update(f"{count} match{'es' if count != 1 else ''}")
+        text = f"{count} match{'es' if count != 1 else ''}" if self.input.value else ""
+        if self._counter.content != text:
+            self._counter.update(text)
 
     @property
     def value(self) -> str:
